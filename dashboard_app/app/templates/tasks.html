@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}Tasks - KPI Dashboard{% endblock %}
+
+{% block page_title %}Tasks{% endblock %}
+
+{% block content %}
+<div id="tasks-container">
+    {% include 'partials/_tasks_table.html' %}
+</div>
+{% endblock %}

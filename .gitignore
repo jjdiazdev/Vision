@@ -1,0 +1,13 @@
+.tmp/
+.env
+dashboard_app/venv/*
+dashboard_app/env/*
+*.json
+__pycache__/
+*.py[cod]
+*$py.class
+*.db
+*.db-shm
+*.db-wal
+*.DS_Store
+.agent/memory/session_log.md

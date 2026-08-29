@@ -1,0 +1,54 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./dashboard_app/instance:/app/dashboard_app/instance
+    env_file:
+      - .env
+    environment:
+      - FLASK_ENV=development
+      - DATABASE_URL=sqlite:////app/dashboard_app/instance/app.db
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      - ollama
+
+  github-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./dashboard_app/instance:/app/dashboard_app/instance
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:////app/dashboard_app/instance/app.db
+      - SYNC_INTERVAL_SECONDS=5
+      - DISCOVERY_INTERVAL_SECONDS=60
+    # Bypasses the image's migration-running entrypoint (Dockerfile) -- only `web` runs
+    # migrations, so two containers never try to migrate the same SQLite file at once.
+    entrypoint: ["python", "-m", "execution.github_sync_worker"]
+    depends_on:
+      - web
+
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./docker/ollama/entrypoint.sh:/entrypoint.sh
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+
+volumes:
+  ollama_data:

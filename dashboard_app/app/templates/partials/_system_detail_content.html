@@ -1,0 +1,55 @@
+<div class="glass-card">
+    <h3 class="card-title">{{ system.name }}</h3>
+    <p class="card-subtitle">Projects in this System</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 50px;">ID</th>
+                <th>Project Name</th>
+                <th>Status</th>
+                <th>Progress</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for project in system.projects %}
+            <tr {% if project.is_complete %}class="row-completed"{% endif %}>
+                <td class="text-secondary" style="font-family: monospace;">{{ project.id }}</td>
+                <td>
+                    <a href="{{ url_for('main.tasks_list', f_project_id=project.id) }}" class="project-name">
+                        {{ project.name }}
+                    </a>
+                    {% if project.github_url %}
+                    <a href="{{ project.github_url }}" target="_blank" rel="noopener noreferrer" title="Open repository on GitHub" style="margin-left: 6px; color: var(--text-secondary);">
+                        <i class="bi bi-link-45deg"></i>
+                    </a>
+                    {% endif %}
+                </td>
+                <td>
+                    <select name="status"
+                            class="badge badge-{{ project.status.value }}"
+                            hx-post="{{ url_for('main.update_project_status', project_id=project.id, refresh='system') }}"
+                            hx-target="#system-detail-container"
+                            hx-swap="innerHTML">
+                        {% for status in statuses %}
+                        {% if not status.value.startswith('Repeat') %}
+                        <option value="{{ status.value }}" {% if project.status == status %}selected{% endif %} style="background: #1a1a1a; color: white;">
+                            {{ status.value }}
+                        </option>
+                        {% endif %}
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <div class="progress-container">
+                        <div class="progress-label">{{ project.progress }}%</div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" style="width: {{ project.progress }}%;"></div>
+                        </div>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

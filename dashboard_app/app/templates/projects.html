@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block title %}Projects - KPI Dashboard{% endblock %}
+
+{% block page_title %}Projects{% endblock %}
+
+{% block content %}
+<div id="projects-container">
+    {% set table_title = "All Initiatives" %}
+    {% set table_subtitle = "Detailed project portfolio and progress tracking" %}
+    {% include 'partials/_projects_table.html' %}
+</div>
+{% endblock %}

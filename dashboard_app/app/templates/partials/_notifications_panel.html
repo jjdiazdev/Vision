@@ -1,0 +1,52 @@
+<div class="glass-card notifications-container" sse-listen="datachanged">
+    <!-- SSE Update Trigger (Targets this card specifically) -->
+    <div hx-get="{{ url_for('main.api_notifications_updates') }}"
+         hx-trigger="sse:datachanged"
+         hx-target=".notifications-container"
+         hx-swap="outerHTML"
+         style="display:none;">
+    </div>
+
+    <h3 class="card-title">Notification History</h3>
+    <p class="card-subtitle">Catch up on changes you may have missed</p>
+
+    <div class="table-scroll-region">
+        {% for n in notifications %}
+        <div id="notification-{{ n.id }}" class="notification-item notification-{{ n.type }}">
+            {% if n.project_id %}
+            <a href="{{ url_for('main.tasks_list', f_project_id=n.project_id, f_employee_id=n.employee_id, f_q=n.task.name if n.task else None) }}"
+               class="notification-body notification-body-link"
+               hx-target="#slot"
+               hx-swap="innerHTML transition:true">
+            {% else %}
+            <div class="notification-body">
+            {% endif %}
+                <p class="notification-message">
+                    {% if n.task_id %}<span class="notification-task-id">#{{ n.task_id }}</span>{% endif %}
+                    {{ n.message }}
+                </p>
+                <div class="notification-meta">
+                    {% if n.employee %}
+                    <span class="notification-employee">
+                        <span class="user-icon-circle"><i class="bi bi-person-fill"></i></span>
+                        {{ n.employee.name }}
+                    </span>
+                    {% endif %}
+                    <span class="notification-time">{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                </div>
+            {% if n.project_id %}
+            </a>
+            {% else %}
+            </div>
+            {% endif %}
+            <button class="notification-dismiss"
+                    hx-post="{{ url_for('main.delete_notification', notification_id=n.id) }}"
+                    hx-target="closest .notification-item"
+                    hx-swap="outerHTML swap:500ms"
+                    title="Dismiss">&times;</button>
+        </div>
+        {% else %}
+        <p class="notification-empty">Nothing to catch up on — changes will show up here.</p>
+        {% endfor %}
+    </div>
+</div>

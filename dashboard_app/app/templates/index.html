@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - KPI Dashboard{% endblock %}
+
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div id="analytics-container">
+    {% include 'partials/_analytics_grid.html' %}
+</div>
+
+<div class="dashboard-projects-row">
+    <div id="projects-container" class="dashboard-projects-col">
+        {% include 'partials/_projects_table.html' %}
+    </div>
+    <div id="notifications-container" class="dashboard-notifications-col">
+        {% include 'partials/_notifications_panel.html' %}
+    </div>
+</div>
+{% endblock %}

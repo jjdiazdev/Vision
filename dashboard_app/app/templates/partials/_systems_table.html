@@ -1,0 +1,42 @@
+<div class="glass-card systems-table-container" sse-listen="datachanged">
+    <!-- SSE Update Trigger (Targets this card specifically) -->
+    <div hx-get="{{ url_for('main.api_systems_updates') }}"
+         hx-trigger="sse:datachanged"
+         hx-target=".systems-table-container"
+         hx-swap="outerHTML"
+         style="display:none;">
+    </div>
+
+    <div hx-push-url="true">
+        <h3 class="card-title">Systems</h3>
+        <p class="card-subtitle">Organizations tracked across all projects</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 50px;">ID</th>
+                    <th>System Name</th>
+                    <th>Projects Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for system in systems %}
+                <tr>
+                    <td class="text-secondary" style="font-family: monospace;">{{ system.id }}</td>
+                    <td>
+                        <a href="{{ url_for('main.system_detail', system_id=system.id) }}" class="project-name">
+                            {{ system.name }}
+                        </a>
+                        {% if system.github_url %}
+                        <a href="{{ system.github_url }}" target="_blank" rel="noopener noreferrer" title="Open organization on GitHub" style="margin-left: 6px; color: var(--text-secondary);">
+                            <i class="bi bi-link-45deg"></i>
+                        </a>
+                        {% endif %}
+                    </td>
+                    <td>{{ system.projects|length }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>

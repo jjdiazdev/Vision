@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}{{ system.name }} - KPI Dashboard{% endblock %}
+
+{% block page_title %}{{ system.name }}{% endblock %}
+
+{% block content %}
+<div id="system-detail-container"
+     sse-listen="datachanged"
+     hx-get="{{ url_for('main.api_system_detail_updates', system_id=system.id) }}"
+     hx-trigger="sse:datachanged"
+     hx-target="this"
+     hx-swap="innerHTML">
+    {% include 'partials/_system_detail_content.html' %}
+</div>
+{% endblock %}

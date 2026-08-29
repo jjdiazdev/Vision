@@ -1,0 +1,41 @@
+<div class="glass-card" 
+     sse-listen="datachanged"
+     hx-get="{{ url_for('main.api_employees_updates') }}" 
+     hx-trigger="sse:datachanged" 
+     hx-target="this" 
+     hx-swap="outerHTML">
+
+    <h3 class="card-title">Team</h3>
+    <p class="card-subtitle">Current workforce management</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Tasks Count</th>
+                <th>Joined At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for employee in employees %}
+            <tr>
+                <td>{{ employee.id }}</td>
+                <td>
+                    <div style="display: flex; align-items: center;">
+                        <div class="user-icon-circle">
+                            <i class="bi bi-person-fill"></i>
+                        </div>
+                        <a href="{{ url_for('main.tasks_list', f_employee_id=employee.id) }}" class="project-name">{{ employee.name }}</a>
+                        <i class="bi bi-copy" title="Copy name" data-name="{{ employee.name }}"
+                           style="margin-left: 8px; cursor: pointer; color: var(--text-secondary); font-size: 0.9em;"
+                           onclick="navigator.clipboard.writeText(this.dataset.name); window.addAlert('Name copied to clipboard', 'success');"></i>
+                    </div>
+                </td>
+                <td>{{ employee.tasks|length }}</td>
+                <td>{{ employee.created_at.strftime('%Y-%m-%d') }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

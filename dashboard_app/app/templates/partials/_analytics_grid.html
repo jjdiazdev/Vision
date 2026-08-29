@@ -1,0 +1,25 @@
+<div class="analytics-grid" sse-listen="datachanged">
+    <!-- SSE Update Trigger (Targets the grid specifically) -->
+    <div hx-get="{{ url_for('main.api_index_updates') }}" 
+         hx-trigger="sse:datachanged" 
+         hx-target=".analytics-grid" 
+         hx-swap="outerHTML" 
+         style="display:none;">
+    </div>
+
+    {% for stat in analytics %}
+    <a href="{{ stat.link }}" 
+       class="analytics-card" 
+       hx-push-url="true" 
+       style="text-decoration: none; color: inherit; cursor: pointer;">
+        <div class="analytics-info">
+            <h4>{{ stat.title }}</h4>
+            <div>
+                <span class="value">{{ stat.value }}</span>
+                <span class="trend {{ 'up' if stat.trend_up else 'down' }}">{{ stat.trend }}</span>
+            </div>
+        </div>
+        <div class="analytics-icon"><i class="bi {{ stat.icon }}"></i></div>
+    </a>
+    {% endfor %}
+</div>

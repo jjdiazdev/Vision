@@ -1,0 +1,183 @@
+<div class="glass-card tasks-table-container" sse-listen="datachanged">
+    <!-- SSE Update Trigger (Targets only the table body to preserve filter focus) -->
+    <div hx-get="{{ url_for('main.api_tasks_updates') }}"
+         hx-trigger="sse:datachanged"
+         hx-target="#tasks-table-body"
+         hx-select="#tasks-table-body"
+         hx-swap="outerHTML"
+         hx-include=".task-filter-input"
+         style="display:none;">
+    </div>
+
+    <h3 class="card-title">All Tasks</h3>
+    <p class="card-subtitle">Global issue tracking and status management</p>
+
+    <table class="task-table global-tasks">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Task Name</th>
+                <th>Issue</th>
+                <th>PR</th>
+                <th>Status</th>
+                <th>System</th>
+                <th>Project</th>
+                <th>Assignee</th>
+            </tr>
+            <tr class="filter-row"
+                style="background: rgba(255,255,255,0.05);"
+                hx-get="{{ url_for('main.api_tasks_updates') }}"
+                hx-target="#tasks-table-body"
+                hx-select="#tasks-table-body"
+                hx-swap="outerHTML"
+                hx-include=".task-filter-input">
+                <th></th>
+                <th>
+                    <div style="display: flex; gap: 5px; align-items: center;">
+    <input type="text" name="f_q" class="task-filter-input"
+           placeholder="Search..."
+           value="{{ f_q if f_q }}"
+           oninput="document.getElementById('clear-search').style.display = this.value ? 'inline' : 'none';"
+           onkeydown="if(event.key==='Enter'){htmx.trigger('#search-btn','click');}"
+           onkeyup="if(event.key==='Enter'){htmx.trigger('#search-btn','click');}"
+           hx-trigger="keyup[key=='Enter'], click from:#search-btn"
+           style="flex: 1; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: white; padding: 2px 5px; border-radius: 4px; font-size: 14px;">
+    <span id="clear-search"
+          style="display:none; cursor:pointer; margin-left:4px; color:var(--text-primary);"
+          onclick="document.querySelector('.task-filter-input').value=''; document.getElementById('clear-search').style.display='none'; htmx.trigger('#search-btn','click');">✕</span>
+    <button id="search-btn" type="button" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.1); color: white; cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 11px;">
+        <i class="bi bi-search"></i>
+    </button>
+</div>
+
+                    </div>
+                </th>
+                <th></th>
+                <th></th>
+                <th>
+                    <select name="f_status" class="task-filter-input" hx-trigger="change" style="width: 100%; background: #1a1a1a; color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px; font-size: 11px;">
+                        <option value="all">All Status</option>
+                        {% for status in statuses %}
+                        <option value="{{ status.value }}" {% if f_status == status.value %}selected{% endif %}>{{ status.value }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select name="f_system_id" class="task-filter-input" hx-trigger="change" onchange="filterProjectOptionsBySystem(this.value)" style="width: 100%; background: #1a1a1a; color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px; font-size: 11px;">
+                        <option value="all">All Systems</option>
+                        {% for system in all_systems %}
+                        <option value="{{ system.id }}" {% if f_system_id == system.id|string %}selected{% endif %}>{{ system.name }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select name="f_project_id" class="task-filter-input" hx-trigger="change" style="width: 100%; background: #1a1a1a; color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px; font-size: 11px;">
+                        <option value="all">All Projects</option>
+                        {% for project in all_projects %}
+                        <option value="{{ project.id }}" data-system-id="{{ project.system_id }}" {% if f_project_id == project.id|string %}selected{% endif %}>{{ project.name }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select name="f_employee_id" class="task-filter-input" hx-trigger="change" style="width: 100%; background: #1a1a1a; color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px; font-size: 11px;">
+                        <option value="all">All Assignees</option>
+                        <option value="none" {% if f_employee_id == 'none' %}selected{% endif %}>Unassigned</option>
+                        {% for employee in all_employees %}
+                        <option value="{{ employee.id }}" {% if f_employee_id == employee.id|string %}selected{% endif %}>{{ employee.name }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+            </tr>
+        </thead>
+        <tbody id="tasks-table-body">
+            {% for task in tasks %}
+            <tr>
+                <td>{{ task.id }}</td>
+                <td>
+                    {% if task.github_url %}
+                    <a href="{{ task.github_url }}" target="_blank" rel="noopener noreferrer"
+                       class="project-name {{ task.review_state_class }}"
+                       {% if task.review_state_class %}title="{{ task.github_review_state.value }}"{% endif %}>{{ task.name }}</a>
+                    {% else %}
+                    <span class="{{ task.review_state_class }}">{{ task.name }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if task.github_issue_url %}
+                    <a href="{{ task.github_issue_url }}" target="_blank" rel="noopener noreferrer" class="project-name">#{{ task.github_issue_number }}</a>
+                    {% else %}
+                    <span class="text-secondary">N/A</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if task.github_pr_url %}
+                    <a href="{{ task.github_pr_url }}" target="_blank" rel="noopener noreferrer" class="project-name">#{{ task.github_pr_number }}</a>
+                    {% else %}
+                    <span class="text-secondary">N/A</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <select name="status"
+                            class="badge badge-{{ task.status.value }}"
+                            hx-post="{{ url_for('main.update_task_status', task_id=task.id, refresh='tasks') }}"
+                            hx-target="#tasks-table-body"
+                            hx-select="#tasks-table-body"
+                            hx-swap="outerHTML"
+                            hx-include=".task-filter-input"
+                            style="cursor: pointer; padding: 2px 4px; font-size: 10px; font-weight: bold; text-transform: uppercase; max-width: 130px;">
+                        {% for status in statuses %}
+                        <option value="{{ status.value }}" {% if task.status == status %}selected{% endif %} style="background: #1a1a1a; color: white;">
+                            {{ status.value }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>{{ task.project.system.name if task.project.system else "—" }}</td>
+                <td>{{ task.project.name }}</td>
+                <td>
+                    <div style="display: flex; align-items: center;">
+                        <div class="user-icon-circle">
+                            <i class="bi bi-person-fill"></i>
+                        </div>
+                        <select name="employee_id"
+                                hx-post="{{ url_for('main.update_task_status', task_id=task.id, refresh='tasks') }}"
+                                hx-target="#tasks-table-body"
+                                hx-select="#tasks-table-body"
+                                hx-swap="outerHTML"
+                                hx-include=".task-filter-input"
+                                style="cursor: pointer; border: none; background: transparent; color: inherit; font-family: inherit; font-size: inherit;">
+                            <option value="none" {% if not task.assignee %}selected{% endif %} style="background: #1a1a1a; color: white;">Unassigned</option>
+                            {% for employee in all_employees %}
+                            <option value="{{ employee.id }}" {% if task.employee_id == employee.id %}selected{% endif %} style="background: #1a1a1a; color: white;">
+                                {{ employee.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <script>
+        function filterProjectOptionsBySystem(systemId) {
+            const projectSelect = document.querySelector('select[name="f_project_id"]');
+            if (!projectSelect) return;
+            let selectedIsHidden = false;
+            for (const option of projectSelect.options) {
+                if (option.value === 'all') continue;
+                const matches = systemId === 'all' || option.dataset.systemId === systemId;
+                option.hidden = !matches;
+                if (option.selected && !matches) selectedIsHidden = true;
+            }
+            if (selectedIsHidden) {
+                projectSelect.value = 'all';
+                projectSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+        (function () {
+            const systemSelect = document.querySelector('select[name="f_system_id"]');
+            if (systemSelect) filterProjectOptionsBySystem(systemSelect.value);
+        })();
+    </script>
+</div>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Locked — Vision Dashboard{% endblock %}
+{% block content %}
+<div class="lock-overlay">
+    <form method="POST" action="{{ url_for('main.login') }}" class="lock-modal glass-card" hx-boost="false">
+        <h3 class="card-title">Admin Access Required</h3>
+        <p class="card-subtitle">Enter the admin password to unlock the dashboard</p>
+        {% if error %}<p class="lock-error">Incorrect password.</p>{% endif %}
+        <input type="password" name="password" placeholder="Password" autofocus required>
+        <button type="submit" class="lock-submit">Login</button>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,548 @@
+{% if not is_htmx %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <title>{% block title %}Vision Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- HTMX and Alpine.js -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+    <script>htmx.config.globalViewTransitions = false;</script>
+    
+    <!-- Picovoice SDK -->
+    <script src="https://unpkg.com/@picovoice/porcupine-web"></script>
+    <script src="https://unpkg.com/@picovoice/web-voice-processor"></script>
+    
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        document.addEventListener('htmx:afterOnLoad', function(evt) {
+            // Only re-initialize if the main content area (#slot) was updated
+            if (evt.detail.target.id === 'slot' && window.initDashboardContent) {
+                window.initDashboardContent();
+            }
+        });
+
+        // Inject X-LLM-Backend header into all HTMX requests
+        document.addEventListener('htmx:configRequest', (event) => {
+            const hpMode = localStorage.getItem('vision_hp_mode') === 'true';
+            console.log('[HTMX] Injecting X-LLM-Backend:', hpMode ? 'cloud' : 'local');
+            event.detail.headers['X-LLM-Backend'] = hpMode ? 'cloud' : 'local';
+            
+            // Check if this was a voice-initiated command
+            if (window.wasVoiceCommand) {
+                console.log('[HTMX] Injecting X-Voice-Command: true');
+                event.detail.headers['X-Voice-Command'] = 'true';
+            }
+        });
+    </script>
+</head>
+<body hx-ext="sse" sse-connect="/stream" hx-boost="true" 
+      x-data="{ 
+            minimized: false, 
+            chatOpen: false, 
+            chatMinimized: false,
+            settingsOpen: false,
+            processing: false,
+            recording: false,
+            transcript: '',
+            highPerformance: localStorage.getItem('vision_hp_mode') !== 'false',
+            dragging: false, 
+            posX: null, 
+            posY: null, 
+            startX: 0, 
+            startY: 0,
+            alerts: [],
+            useSystemKeyboard: localStorage.getItem('vision_use_system_kbd') === 'true',
+            isLandscape: window.matchMedia('(orientation: landscape)').matches,
+            viewportHeight: window.innerHeight,
+            keyboardOpen: false,
+            showMobileKeyboard: false,
+      clearChat() { const history = document.getElementById('chat-messages'); if (history) { history.innerHTML = ''; } },
+}" 
+      x-init="
+        window.isMobile = window.innerWidth <= 470;
+        $watch('highPerformance', val => localStorage.setItem('vision_hp_mode', val));
+        $watch('useSystemKeyboard', val => localStorage.setItem('vision_use_system_kbd', val));
+        window.wasVoiceCommand = false; 
+
+        if (window.visualViewport) {
+            const updateViewport = () => {
+                this.viewportHeight = window.visualViewport.height;
+                const prevKeyboardOpen = this.keyboardOpen;
+                this.keyboardOpen = window.visualViewport.height < window.innerHeight * 0.85;
+                
+                // If system keyboard is hidden manually (by clicking done/back), sync our state
+                if (prevKeyboardOpen && !this.keyboardOpen && this.useSystemKeyboard) {
+                    this.showMobileKeyboard = false;
+                }
+                
+                console.log('[Viewport] Height:', this.viewportHeight, 'Keyboard:', this.keyboardOpen);
+            };
+            window.visualViewport.addEventListener('resize', updateViewport);
+            window.visualViewport.addEventListener('scroll', updateViewport);
+            // Initial call
+            updateViewport();
+        }
+
+        // Listen for real orientation changes
+        window.matchMedia('(orientation: landscape)').addEventListener('change', e => {
+            isLandscape = e.matches;
+            console.log('[Orientation] Changed to:', e.matches ? 'Landscape' : 'Portrait');
+        });
+        
+        // Initialize Wake Word Engine
+        const pvKey = '{{ picovoice_access_key or '' }}';
+        if (pvKey) {
+            window.wakeWordEngine = new WakeWordEngine(pvKey, 'Wake up');
+            window.wakeWordEngine.init();
+        }
+      "
+      @vision-alert.window="
+        const id = Date.now();
+        alerts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
+        window.playToastSound();
+        setTimeout(() => {
+            alerts = alerts.filter(a => a.id !== id);
+        }, 5000);
+      "
+      @vision-wake.window="
+        console.log('[HUD] System Awakening...');
+        visionVoice.start();
+        // Optional: play activation sound
+        // new Audio('/static/sounds/activation.mp3').play();
+      "
+      @htmx:before-request.window="processing = true"
+      @htmx:after-request.window="
+        processing = false; 
+        console.log('[HUD] Request finished. wasVoiceCommand:', window.wasVoiceCommand, 'Target:', $event.detail.target.id);
+        if (window.wasVoiceCommand && $event.detail.target.id === 'typing-indicator') {
+            console.log('[HUD] Voice follow-up triggered. Waiting 1.5s...');
+            window.wasVoiceCommand = false;
+            setTimeout(() => {
+                console.log('[HUD] Restarting microphone (4s window)...');
+                transcript = '';
+                visionVoice.start(4000);
+            }, 1500);
+        }
+      "
+      @htmx:after-swap.window="console.log('[HUD] Content swapped')"
+      @htmx:response-error.window="processing = false"
+      @htmx:send-error.window="processing = false"
+      @voice-start.window="recording = true; transcript = ''"
+      @voice-end.window="recording = false"
+      @voice-result.window="transcript = $event.detail.final || $event.detail.interim"
+      @voice-error.window="recording = false; console.error('Voice Error:', $event.detail.error)"
+      @voice-transcript.window="
+        console.log('[HUD] Voice Transcript Received:', $event.detail.text);
+        if (!chatOpen) chatOpen = true;
+        chatMinimized = false;
+        window.wasVoiceCommand = true;
+        transcript = $event.detail.text;
+        $nextTick(() => {
+            const input = document.querySelector('.hud-chat-input');
+            if (input) {
+                input.value = $event.detail.text;
+                htmx.trigger('#chat-form', 'submit');
+            }
+        });
+      ">
+    <div id="vision-viewport">
+        <canvas id="vision-bg" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none;"></canvas>
+
+        <main>
+            <div id="slot" hx-target="this" hx-swap="innerHTML transition:true">
+    {% endif %}
+
+                {% block content %}{% endblock %}
+
+    {% if not is_htmx %}
+            </div>
+        </main>
+
+        <!-- Virtual Keyboard (Mobile Only) -->
+        <div class="hud-virtual-keyboard" 
+             x-show="chatOpen && !chatMinimized && (window.innerWidth <= 470 || (isLandscape && window.innerWidth < 950)) && !useSystemKeyboard && showMobileKeyboard"
+             x-data="{ 
+                caps: false, 
+                typeChar(char) {
+                    const input = document.querySelector('.hud-chat-input');
+                    if (!input) return;
+                    
+                    const start = input.selectionStart;
+                    const end = input.selectionEnd;
+                    const val = input.value;
+                    
+                    if (char === 'BACKSPACE') {
+                        if (start === end && start > 0) {
+                            input.value = val.substring(0, start - 1) + val.substring(start);
+                            input.setSelectionRange(start - 1, start - 1);
+                        } else {
+                            input.value = val.substring(0, start) + val.substring(end);
+                            input.setSelectionRange(start, start);
+                        }
+                    } else if (char === 'ENTER') {
+                        htmx.trigger('#chat-form', 'submit');
+                    } else if (char === 'SPACE') {
+                        input.value = val.substring(0, start) + ' ' + val.substring(end);
+                        input.setSelectionRange(start + 1, start + 1);
+                    } else {
+                        const isLetter = /^[A-Z]$/.test(char);
+                        const actualChar = (isLetter && !this.caps) ? char.toLowerCase() : char;
+                        input.value = val.substring(0, start) + actualChar + val.substring(end);
+                        input.setSelectionRange(start + 1, start + 1);
+                    }
+                    input.focus();
+                }
+             }">
+            
+            <!-- Row 1: Numbers -->
+            <div class="kbd-row">
+                <template x-for="char in ['1','2','3','4','5','6','7','8','9','0']">
+                    <div class="kbd-key" x-text="char" @click="typeChar(char)"></div>
+                </template>
+            </div>
+
+            <!-- Row 2: Top Letters -->
+            <div class="kbd-row">
+                <template x-for="char in ['Q','W','E','R','T','Y','U','I','O','P']">
+                    <div class="kbd-key" x-text="caps ? char : char.toLowerCase()" @click="typeChar(char)"></div>
+                </template>
+            </div>
+
+            <!-- Row 3: Middle Letters (Including Ñ) -->
+            <div class="kbd-row">
+                <template x-for="char in ['A','S','D','F','G','H','J','K','L','Ñ']">
+                    <div class="kbd-key" x-text="caps ? char : char.toLowerCase()" @click="typeChar(char)"></div>
+                </template>
+            </div>
+
+            <!-- Row 4: Bottom Letters -->
+            <div class="kbd-row">
+                <div class="kbd-key span-3 special-key" @click="showMobileKeyboard = false; document.querySelector('.hud-chat-input')?.blur()">
+                    <i class="bi bi-keyboard-hide"></i>
+                </div>
+                <template x-for="char in ['Z','X','C','V','B','N','M']">
+                    <div class="kbd-key" x-text="caps ? char : char.toLowerCase()" @click="typeChar(char)"></div>
+                </template>
+                <div style="grid-column: span 3;"></div>
+            </div>
+
+            <!-- Row 5: Function & Symbols Row (Full Width via Flex) -->
+            <div class="kbd-row" style="display: flex; gap: 4px;">
+                <div class="kbd-key special-key" style="width: 20%;" @click="caps = !caps" :class="{ 'active-tier': caps }">
+                    <i class="bi" :class="caps ? 'bi-shift-fill' : 'bi-shift'"></i>
+                </div>
+                <template x-for="char in ['.',',','?','!','@','(',')','[',']']">
+                    <div class="kbd-key" style="flex: 1;" x-text="char" @click="typeChar(char)"></div>
+                </template>
+            </div>
+
+            <!-- Row 6: Utility -->
+            <div class="kbd-row">
+                <div class="kbd-key span-4 special-key" @click="typeChar('ENTER')">
+                    <i class="bi bi-arrow-return-left"></i>
+                </div>
+                <div class="kbd-key space-bar-full" @click="typeChar('SPACE')">SPACE</div>
+                <div class="kbd-key span-4 special-key" @click="typeChar('BACKSPACE')">
+                    <i class="bi bi-backspace"></i>
+                </div>
+            </div>
+        </div>
+
+        <div class="hud-chat-window" 
+             :class="{ 
+                'with-custom-kbd': (window.innerWidth <= 470 || (isLandscape && window.innerWidth < 950)) && !useSystemKeyboard && showMobileKeyboard,
+                'force-fullscreen': (window.innerWidth <= 470 || (isLandscape && window.innerWidth < 950)) && (useSystemKeyboard || !showMobileKeyboard),
+                'keyboard-active': (useSystemKeyboard && keyboardOpen) || (!useSystemKeyboard && showMobileKeyboard)
+             }"
+             x-show="chatOpen && !chatMinimized" 
+             x-transition:enter="transition ease-out duration-300"
+             x-transition:enter-start="opacity-0 scale-90 translate-y-10"
+             x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+             :style="{ 
+                height: (isLandscape && window.innerWidth < 950) ? viewportHeight + 'px' : '',
+                left: (isLandscape && window.innerWidth < 950) ? '0' : (posX !== null ? posX + 'px' : '40px'),
+                top: (isLandscape && window.innerWidth < 950) ? '0' : (posY !== null ? posY + 'px' : 'auto'),
+                bottom: (isLandscape && window.innerWidth < 950) ? 'auto' : (posY !== null ? 'auto' : '40px'),
+                transform: 'none',
+                transition: dragging ? 'none' : ''
+             }"
+             @mousedown="if ($event.target.closest('.hud-chat-header') && window.innerWidth > 470) { 
+                dragging = true; 
+                if (posX === null) {
+                    const rect = $el.getBoundingClientRect();
+                    posX = rect.left;
+                    posY = rect.top;
+                }
+                startX = $event.clientX - posX; 
+                startY = $event.clientY - posY;
+             }"
+             @mousemove.window="if (dragging) { posX = $event.clientX - startX; posY = $event.clientY - startY; }"
+             @mouseup.window="dragging = false"
+             @click.stop>
+            <div class="hud-chat-header" style="cursor: move; user-select: none;">
+                <div class="d-flex align-items-center">
+                    <h5><i class="bi bi-cpu-fill me-2"></i>VISION</h5>
+                    <template x-if="recording">
+                        <span class="ms-3 badge-recording animate-pulse" style="font-size: 10px; color: var(--accent-red); text-transform: uppercase; letter-spacing: 1px;">
+                            <i class="bi bi-record-circle-fill me-1"></i> Listening
+                        </span>
+                    </template>
+                </div>
+                <div class="d-flex gap-2">
+                    <button @click="clearChat()" class="btn-close-hud" title="Clear Chat History" aria-label="Clear chat history" @mousedown.stop><i class="bi bi-trash"></i></button>
+                    <button @click="chatMinimized = true" class="btn-close-hud" title="Minimize" @mousedown.stop><i class="bi bi-dash-lg"></i></button>
+                    <button @click="chatOpen = false; chatMinimized = false" class="btn-close-hud" title="Close Chat" @mousedown.stop><i class="bi bi-x"></i></button>
+                </div>
+            </div>
+            <div class="hud-chat-body" id="chat-messages">
+                <div class="chat-message ai">
+                    <div class="message-content">System online. How can I assist you, Sir?</div>
+                </div>
+            </div>
+            <div class="hud-chat-footer">
+                <form id="chat-form"
+                      hx-post="/agent/chat" 
+                      hx-target="#typing-indicator" 
+                      hx-swap="outerHTML" 
+                      @submit="
+                        const isManual = document.activeElement === $el.querySelector('.hud-chat-send') || document.activeElement === $el.querySelector('input');
+                        if (isManual && !window.wasVoiceCommand) {
+                            window.wasVoiceCommand = false;
+                        }
+                        console.log('[HUD] Form Submit. wasVoiceCommand:', window.wasVoiceCommand, 'Manual:', isManual);
+                        const input = $el.querySelector('input[name=message]');
+                        const msg = input.value.trim();
+                        if (!msg) return;
+
+                        // Hide keyboard after submission
+                        showMobileKeyboard = false;
+                        input.blur();
+
+                        const history = document.getElementById('chat-messages');
+                        history.insertAdjacentHTML('beforeend', `<div class='chat-message user'><div class='message-content'>${msg}</div></div>`);
+                        history.insertAdjacentHTML('beforeend', `<div id='typing-indicator' class='chat-message ai'><div class='typing-dots'><span></span><span></span><span></span></div></div>`);
+                        history.scrollTop = history.scrollHeight;
+                        setTimeout(() => $el.reset(), 10);
+                      "
+                      hx-on::after-request="document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;"
+                      class="d-flex w-100 gap-2">
+                      <div class="position-relative flex-grow-1 d-flex align-items-center">
+                          <input type="text" 
+                                 name="message" 
+                                 class="hud-chat-input w-100" 
+                                 placeholder="Enter command..." 
+                                 autocomplete="off"
+                                 :inputmode="((window.innerWidth <= 470 || isLandscape) && !useSystemKeyboard) ? 'none' : 'text'"
+                                 :disabled="processing"
+                                 :value="recording ? transcript : ''"
+                                 @click="minimized = true; showMobileKeyboard = true"
+                                 @focus="showMobileKeyboard = true"
+                                 @blur="if(useSystemKeyboard) showMobileKeyboard = false">
+
+                          <button type="button" 
+ 
+                                class="btn-chat-mic" 
+                                @click.stop="visionVoice.toggle()"
+                                :class="{ 'recording': recording }"
+                                title="Voice Command">
+                            <i class="bi" :class="recording ? 'bi-mic-fill' : 'bi-mic'"></i>
+                        </button>
+                      </div>
+                      <button type="submit" class="hud-chat-send" :disabled="processing">
+                        <i class="bi bi-send-fill"></i>
+                      </button>
+                      </form>
+
+            </div>
+        </div>
+
+        <!-- Settings Window -->
+        <div class="hud-settings-window" 
+             x-show="settingsOpen" 
+             x-transition:enter="transition ease-out duration-300"
+             x-transition:enter-start="opacity-0 scale-90 translate-y-10"
+             x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+             x-transition:leave="transition ease-in duration-200"
+             x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+             x-transition:leave-end="opacity-0 scale-90 translate-y-10"
+             @click.stop>
+            <div class="hud-chat-header">
+                <h5><i class="bi bi-sliders me-2"></i>SETTINGS</h5>
+                <button @click="settingsOpen = false" class="btn-close-hud"><i class="bi bi-x"></i></button>
+            </div>
+            <div class="hud-chat-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span style="color: var(--hud-highlight); font-size: 13px;">High Performance (Cloud)</span>
+                    <label class="hud-switch">
+                        <input type="checkbox" x-model="highPerformance">
+                        <span class="hud-slider"></span>
+                    </label>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span style="color: var(--hud-highlight); font-size: 13px;">Use System Keyboard</span>
+                    <label class="hud-switch">
+                        <input type="checkbox" x-model="useSystemKeyboard">
+                        <span class="hud-slider"></span>
+                    </label>
+                </div>
+                <small style="color: var(--hud-secondary); font-size: 11px;">Uses NVIDIA NIM for complex reasoning. Toggle custom keyboard on mobile.</small>
+            </div>
+        </div>
+
+        <!-- IRON MAN HUD CONTROL PANEL -->
+        {% if not is_locked %}
+        <div class="hud-container"
+             :class="{ 'hud-minimized': minimized, 'hud-processing': processing, 'hud-recording': recording }"
+             @click.outside="
+            if (!minimized && $event.target.isConnected) {
+                const isMobile = window.innerWidth <= 470;
+                const clickedUI = $event.target.closest('.analytics-card') || $event.target.closest('.glass-card') || $event.target.closest('.hud-chat-window') || $event.target.closest('.hud-settings-window') || $event.target.closest('.hud-chat-bubble') || $event.target.closest('.hud-btn');
+
+                if (isMobile || !clickedUI) {
+                    minimized = true;
+                    // On mobile, only minimize chat if clicking truly outside the chat window
+                    if (chatOpen && !$event.target.closest('.hud-chat-window')) {
+                        chatMinimized = true;
+                    }
+                }
+            }
+         "
+
+             @vision-navigation.window="
+                console.log('[HUD] Navigation Event Received:', $event.detail);
+                if ($event.detail.target) {
+                    htmx.ajax('GET', $event.detail.target, {
+                        target: '#slot', 
+                        swap: 'innerHTML show:top transition:true'
+                    });
+                }
+             ">
+            
+            <div class="hud-rotating-ring outer"></div>
+            <div class="hud-rotating-ring middle"></div>
+            <div class="hud-rotating-ring inner"></div>
+            
+            <div class="hud-content">
+                <!-- Separator Ring between levels -->
+                <div class="hud-tier-separator"></div>
+
+                <div class="hud-buttons-container" hx-push-url="true" hx-target="#slot" hx-swap="innerHTML transition:true">
+                    <!-- Outer Tier (Level 1) -->
+                    <a href="{{ url_for('main.index') }}" class="hud-btn tier-1" data-tooltip="Dashboard" style="--btn-angle: -60deg;">
+                        <i class="bi bi-house-door-fill"></i>
+                    </a>
+                    <a href="{{ url_for('main.employees_list') }}" class="hud-btn tier-1" data-tooltip="Team" style="--btn-angle: -30deg;">
+                        <i class="bi bi-people-fill"></i>
+                    </a>
+                    <a href="{{ url_for('main.systems_list') }}" class="hud-btn tier-1" data-tooltip="Systems" style="--btn-angle: 0deg;">
+                        <i class="bi bi-gear-wide-connected"></i>
+                    </a>
+                    <a href="{{ url_for('main.projects_list') }}" class="hud-btn tier-1" data-tooltip="Projects" style="--btn-angle: 30deg;">
+                        <i class="bi bi-folder-fill"></i>
+                    </a>
+                    <a href="{{ url_for('main.tasks_list') }}" class="hud-btn tier-1" data-tooltip="Tasks" style="--btn-angle: 60deg;">
+                        <i class="bi bi-check-circle-fill"></i>
+                    </a>
+
+                    <!-- Inner Tier (Level 2) -->
+                    <button class="hud-btn tier-2" data-tooltip="Chat" style="--btn-angle: -60deg;" @click="chatOpen = !chatOpen; chatMinimized = false" :class="{ 'active-tier': chatOpen }">
+                        <i class="bi bi-chat-left-dots-fill"></i>
+                    </button>
+                    <button class="hud-btn tier-2" 
+                            data-tooltip="Voice" 
+                            style="--btn-angle: -20deg;"
+                            @click.stop="visionVoice.toggle()"
+                            :class="{ 'active-tier': recording }">
+                        <i class="bi" :class="recording ? 'bi-mic-fill text-danger' : 'bi-mic-fill'"></i>
+                    </button>
+                    <button class="hud-btn tier-2" data-tooltip="Docs" style="--btn-angle: 20deg;">
+                        <i class="bi bi-file-earmark-text-fill"></i>
+                    </button>
+                    <button class="hud-btn tier-2" data-tooltip="Settings" style="--btn-angle: 60deg;" @click="settingsOpen = !settingsOpen" :class="{ 'active-tier': settingsOpen }">
+                        <i class="bi bi-sliders"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="hud-core" @click="minimized = !minimized">
+                <div class="hud-core-inner"></div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- MINIMIZED CHAT BUBBLE -->
+        <div class="hud-chat-bubble" 
+             x-show="chatOpen && chatMinimized"
+             x-transition:enter="transition ease-out duration-300"
+             x-transition:enter-start="opacity-0 scale-0"
+             x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="transition ease-in duration-200"
+             x-transition:leave-start="opacity-100 scale-100"
+             x-transition:leave-end="opacity-0 scale-0"
+             @click.stop="chatMinimized = false; minimized = false"
+             title="Restore Chat">
+            <div class="bubble-inner">
+                <i class="bi bi-chat-left-dots-fill"></i>
+                <div class="bubble-pulse"></div>
+            </div>
+        </div>
+
+        <!-- HUD ALERTS CONTAINER -->
+        <div class="hud-alerts-container">
+            <template x-for="alert in alerts" :key="alert.id">
+                <div class="hud-alert" 
+                     :class="'hud-alert-' + alert.type"
+                     x-transition:enter="transition ease-out duration-300"
+                     x-transition:enter-start="opacity-0 transform translate-x-10"
+                     x-transition:enter-end="opacity-100 transform translate-x-0"
+                     x-transition:leave="transition ease-in duration-300"
+                     x-transition:leave-start="opacity-100 transform translate-x-0"
+                     x-transition:leave-end="opacity-0 transform translate-x-10">
+                    <div class="d-flex align-items-center">
+                        <i class="bi me-2" :class="{
+                            'bi-exclamation-triangle-fill': alert.type === 'error',
+                            'bi-info-circle-fill': alert.type === 'info',
+                            'bi-check-circle-fill': alert.type === 'success'
+                        }"></i>
+                        <span x-text="alert.message"></span>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <script>
+        window.addAlert = (message, type = 'info') => {
+            window.dispatchEvent(new CustomEvent('vision-alert', {
+                detail: { message, type }
+            }));
+        };
+
+        // Plays once per toast, from the @vision-alert.window handler (not from addAlert
+        // itself) so it also covers HX-Trigger-originated toasts that never call addAlert.
+        window.playToastSound = () => {
+            new Audio("{{ url_for('static', filename='sounds/toast-notification.mp3') }}").play().catch(() => {});
+        };
+
+        // Toasts for changes made outside a direct user request (CLI scripts, the
+        // GitHub sync poller) — those have no HTTP response to attach HX-Trigger to,
+        // so they arrive as a named SSE event instead and are shown the same way.
+        document.body.addEventListener('sse:toast', (event) => {
+            try {
+                const payload = JSON.parse(event.detail.data);
+                window.addAlert(payload.message, payload.type || 'info');
+            } catch (err) {
+                console.error('[SSE] Malformed toast payload:', err);
+            }
+        });
+    </script>
+    <script src="{{ url_for('static', filename='js/wake-word.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/voice.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
+{% endif %}
