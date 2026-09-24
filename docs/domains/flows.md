@@ -59,7 +59,13 @@ Both end up as the same `vision-alert` **window** CustomEvent, caught by one Alp
 
 **No-op suppression**: every `update_*` function in `execution/agent_actions.py` diffs each field's
 new value against the current one and only calls `trigger_ui_refresh(toast=...)` if something
-actually changed (a `changed` flag gates the call) — `create_*`/`delete_*` don't need this, since
+actually changed (a `changed` flag gates the call) — with **one deliberate carve-out**:
+`update_task`'s `github_created_at` branch persists its value but never sets `changed`, because
+it is machine-synced metadata with no user action behind it and both sync cadences pass it on
+every pass. Setting `changed` there would toast (and play a sound) every five seconds. The
+`session.commit()` is unconditional, so the write still lands. This is an exception to the rule,
+not a violation of it: the rule exists to suppress meaningless toasts, and that is exactly what
+the carve-out does — `create_*`/`delete_*` don't need this, since
 creating/deleting is always a real change. This matters because `github_sync.py`'s 5-second
 active-task cadence re-sends `update_task()` for every active Task on every cycle whether or not
 anything changed; without the diff, that would toast (and play a sound) every 5 seconds regardless.
@@ -88,6 +94,16 @@ Dashboard-only "Notification History" panel (`partials/_notifications_panel.html
   never swaps a `204` response regardless of `hx-swap`, which would silently make the dismiss button
   a no-op (the nearby `/internal/notify-update` endpoint's `{}, 204` is a different, non-htmx-driven
   caller and isn't a safe pattern to copy here).
+- **Clear-all (`POST /notifications/delete-all`)** empties the panel in one request and is the one
+  state-changing route in `routes.py` that intentionally skips `record_notification()`: recording
+  it would re-populate the list the button exists to empty, leaving a single "history cleared" row
+  behind. Feedback is a display-only `HX-Trigger: vision-alert` toast instead, which never
+  persists a row (only Mechanism A above persists). It returns the **re-rendered panel**, not
+  `('', 200)` — the per-row slide-out has no element left to animate — and announces
+  `announcer.announce("clear_notifications")` so other open dashboards refetch and empty too. The
+  button is rendered only when `notifications` is non-empty, and declares its own
+  `hx-target`/`hx-swap` (never on the `.notifications-header` wrapper) per the inheritance gotcha
+  below.
 - A Task-related card is a link to `/tasks?f_project_id=...&f_employee_id=...&f_q=...` — the first
   two come from `Notification.task_id`/`project_id`'s snapshot, but `f_q` is built from
   `Notification.task.name` (the **live** relationship, not a stored snapshot) specifically so a
@@ -157,7 +173,7 @@ The Orchestrator (and any agent) can express navigation intent via the `navigate
 ### CLI usage
 
 ```bash
-docker exec v-i-s-i-o-n-web-1 python -m execution.agent_actions navigate --to "systems"
+docker exec vision-web-1 python -m execution.agent_actions navigate --to "systems"
 ```
 
 ## Mobile UX

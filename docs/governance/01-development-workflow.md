@@ -43,7 +43,7 @@ que el chat soporte Z".
 - Primary path — inside the `web` service's Docker container (defined in `docker-compose.yml`),
   which already has everything installed and mounted:
   ```bash
-  docker exec v-i-s-i-o-n-web-1 python -m execution.agent_actions <command> ...
+  docker exec vision-web-1 python -m execution.agent_actions <command> ...
   ```
 - Available subcommands: `system`, `project`, `task`, `employee`, `search`, `navigate`.
 - For anything not covered by the `argparse` CLI (e.g. calling `chat_response` or another loose
@@ -55,7 +55,7 @@ que el chat soporte Z".
   of the code (`execution/`, `orchestrator/`, `dashboard_app/app/`, etc.) is copied into the image
   at build time, not live-mounted. A local edit to a `.py` file does **not** automatically reach
   the running container:
-  - For an immediate effect without rebuilding: `docker cp <local file> v-i-s-i-o-n-web-1:/app/<same path>`
+  - For an immediate effect without rebuilding: `docker cp <local file> vision-web-1:/app/<same path>`
     (fast, but lost if the container gets recreated).
   - For the change to persist in the image: rebuild with `docker-compose up --build` (confirm with
     the user before restarting the service, since it affects the running container).
@@ -68,11 +68,11 @@ que el chat soporte Z".
 - Gunicorn/Flask load templates, routes, and models into memory when the process starts — a source
   edit alone doesn't reach the running container by itself (same volume-mounting reason as above).
   For the change to be visible in the browser, the container usually needs to be **restarted**
-  (`docker restart v-i-s-i-o-n-web-1`) after syncing the file with `docker cp`.
+  (`docker restart vision-web-1`) after syncing the file with `docker cp`.
 - **Claude Code does not restart the container on its own to verify a system change.** The correct
   flow is: (1) edit the source in the repo, (2) sync it to the container with `docker cp` if it
   should be ready to test, and (3) tell the user the restart command
-  (`docker restart v-i-s-i-o-n-web-1`) for them to run manually and verify the result themselves.
+  (`docker restart vision-web-1`) for them to run manually and verify the result themselves.
 - Exception: `execution/agent_actions.py` subcommands invoked via
   `docker exec ... python -m execution.agent_actions ...` run as a fresh process every time, so a
   recent `docker cp` does take effect immediately there without a restart — the restart is only

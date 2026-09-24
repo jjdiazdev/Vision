@@ -38,6 +38,7 @@ route.
 | POST | `/update-project/<int:project_id>` | `update_project_status` | status change from a Projects-table or System-detail row dropdown; `?refresh=system` returns the System-detail partial instead of the flat Projects one |
 | POST | `/agent/chat` | `agent_chat` | the HUD chat/voice entrypoint — persists the message, calls the Orchestrator, returns the AI's reply partial plus any `HX-Trigger` navigation/alert |
 | POST | `/notifications/<int:notification_id>/delete` | `delete_notification` | dismisses one Notification History entry; returns `('', 200)` — an htmx `hx-swap="outerHTML swap:300ms"` drives the slide-out animation, and htmx never swaps a `204`, so this must stay `200` |
+| POST | `/notifications/delete-all` | `delete_all_notifications` | clears the **whole** Notification History in one request. Returns the re-rendered `partials/_notifications_panel.html` (not `('', 200)` — with every row gone there is no single `.notification-item` left to animate out, so the caller swaps the whole card), plus an `HX-Trigger: vision-alert` toast. Deliberately does *not* `record_notification()` its own action — see `flows.md` |
 
 ## Internal / infrastructure
 
@@ -48,4 +49,4 @@ route.
 
 Not HTTP routes, but Flask CLI commands in the same app (`dashboard_app/app/commands.py`): `flask
 seed` (populates test data) and `flask process-repetitions` (manually runs
-`execution/repetition_processor.py`'s reset logic once).
+`execution/repetition_processor.py`'s reset logic once; its reset boundary is the local calendar day in `DISPLAY_TIMEZONE`, see `business_logic.md`).

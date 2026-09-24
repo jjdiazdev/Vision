@@ -6,6 +6,7 @@ from dashboard_app.app.extensions import db
 from dashboard_app.app.utils.trigger import trigger_task_update, trigger_project_update
 from dashboard_app.app.utils.sse import announcer
 from orchestrator.brain import Orchestrator
+from datetime import datetime, timezone
 import json
 
 def record_notification(message, type='info', employee_id=None, task_id=None, project_id=None):
@@ -296,9 +297,55 @@ TASK_STATUS_ORDER = {
     StatusEnum.BLOCKED: 5,
 }
 
+# Fixed sentinel for the recency key. Deliberately NOT datetime.min: datetime.min.timestamp()
+# raises ValueError on Linux (year 1 out of range), and leaving datetime.min here would be a
+# landmine for anyone who later reaches for .timestamp().
+_ORDER_EPOCH = datetime(1970, 1, 1)
+
+
+def _to_naive_utc(dt):
+    """Normalize for comparison. A single tz-aware value mixed with naive ones would raise
+    TypeError mid-sort and 500 the whole Tasks page, so this guards inside the sort key --
+    not only at the write boundary."""
+    if dt is not None and dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _task_recency_key(task):
+    """Newest-first key. ALWAYS used with reverse=True, so element 0 is the NULL policy:
+    0 (no github_created_at) sorts LAST within its bucket, 1 sorts first.
+
+    Cannot raise: no arithmetic, no .timestamp(), a fixed tuple shape of plain comparable
+    datetimes/ints, and every datetime normalized to naive UTC first. Ends in task.id, so the
+    key is a TOTAL order -- the result never depends on the DB's (unordered) row order.
+    """
+    github_created = _to_naive_utc(task.github_created_at)
+    local_created = _to_naive_utc(task.created_at) or _ORDER_EPOCH
+    # Issue number breaks same-second ties: GitHub's createdAt has 1-second resolution and
+    # numbers issues monotonically per repo, so burst-created issues do collide.
+    issue_number = task.github_issue_number or 0
+    if github_created is None:
+        return (0, _ORDER_EPOCH, issue_number, local_created, task.id or 0)
+    return (1, github_created, issue_number, local_created, task.id or 0)
+
+
 def sort_tasks(task_list):
-    # Order: Testing -> In-Progress -> Todo -> Repeat_* -> Done -> Blocked
-    return sorted(task_list, key=lambda t: TASK_STATUS_ORDER.get(t.status, 99))
+    """Single ordering authority for the Tasks table. Two levels:
+      1. status bucket: Testing -> In-Progress -> Todo -> Repeat_* -> Done -> Blocked
+      2. within a bucket: newest GitHub issue first, by github_created_at DESC
+
+    Two stable passes rather than one tuple key, because one key cannot mix an ascending
+    field (status) with a descending one (recency) without negating a datetime. The three
+    Tasks queries carry no order_by -- all ordering lives here, and _task_recency_key is a
+    total order, so this does not rely on the DB returning rows in any particular order.
+
+    Tasks with no github_created_at (created by hand, or an issue GitHub no longer returns)
+    go to the END of their bucket rather than being interleaved on a fake date, which keeps
+    the gap visible and self-correcting once sync populates the field.
+    """
+    by_recency = sorted(task_list, key=_task_recency_key, reverse=True)
+    return sorted(by_recency, key=lambda t: TASK_STATUS_ORDER.get(t.status, 99))
 
 @bp.route('/')
 def index():
@@ -323,6 +370,35 @@ def delete_notification(notification_id):
     db.session.delete(notification)
     db.session.commit()
     return '', 200
+
+@bp.route('/notifications/delete-all', methods=['POST'])
+def delete_all_notifications():
+    """Empties the whole Notification History panel in one request.
+
+    Deliberately does NOT record_notification() its own action, unlike every other
+    state-changing route in this module: that would immediately re-populate the list this
+    button exists to empty, leaving exactly one "history cleared" row behind. The toast is
+    sent as a display-only HX-Trigger instead, which never persists a row.
+
+    Returns the re-rendered panel rather than delete_notification's `('', 200)` — with every
+    row gone there is no single .notification-item left to slide out, so the caller swaps the
+    whole card (hx-swap="outerHTML" onto .notifications-container, same shape as
+    api_notifications_updates). Still a 200 *with a body*: htmx never swaps a 204.
+    """
+    deleted = Notification.query.delete()
+    db.session.commit()
+    announcer.announce("clear_notifications")
+
+    # Re-queried instead of passing [] so a Notification written between the DELETE above and
+    # this render (e.g. github_sync's 5s cadence) still appears, rather than being invisible
+    # until the next SSE refresh.
+    notifications = Notification.query.order_by(Notification.created_at.desc()).limit(200).all()
+    response = make_response(render_template('partials/_notifications_panel.html', notifications=notifications))
+    label = "notification" if deleted == 1 else "notifications"
+    response.headers["HX-Trigger"] = json.dumps(
+        {"vision-alert": {"message": f"Cleared {deleted} {label}", "type": "success"}}
+    )
+    return response
 
 @bp.route('/employees')
 def employees_list():

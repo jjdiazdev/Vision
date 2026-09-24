@@ -9,8 +9,12 @@ ENV PYTHONPATH=/app
 WORKDIR /app
 
 # Install system dependencies
+# tzdata is pulled in transitively by the current base image (python:3.11-slim resolves to
+# Debian 13/trixie), so zoneinfo works today -- but nothing asked for it, which means a base
+# image bump could silently remove it and break DISPLAY_TIMEZONE. Declare it explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only requirements first for better caching

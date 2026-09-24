@@ -11,6 +11,10 @@ dashboard_app/
 │   ├── extensions.py        # db, migrate, SQLite WAL pragma setup
 │   ├── utils/sse.py         # MessageAnnouncer — the SSE fan-out used by trigger_ui_refresh
 │   ├── utils/trigger.py     # trigger_task_update / trigger_project_update helpers
+│   ├── utils/htmx_utils.py  # is_htmx / picovoice_access_key / is_locked context processor
+│   ├── utils/timezone_utils.py  # DISPLAY_TIMEZONE conversion — see adr/0002; Flask-free so
+│   │                            # execution/ can import it without an app context
+│   ├── utils/jinja_filters.py   # registers the |localtime template filter
 │   ├── static/               # CSS, JS (Alpine.js glue, wake-word.js, voice.js)
 │   └── templates/            # HTMX partials + the persistent HUD base.html
 ├── instance/app.db          # the live SQLite DB (WAL mode; tracked in git in this project)
@@ -22,7 +26,8 @@ execution/
 ├── db_client.py             # shared DB session factory (WAL-enabled)
 ├── github_sync.py           # read-only GitHub GraphQL polling — see architecture/ + business_logic.md
 ├── github_sync_worker.py    # long-running two-cadence loop entrypoint for the github-sync container
-└── repetition_processor.py  # daily/weekly/monthly Task status resets
+├── repetition_processor.py  # daily/weekly/monthly Task status resets (local-day boundary)
+└── backfill_github_created_at.py  # one-off: populate Task.github_created_at from GitHub
 
 orchestrator/
 ├── brain.py                 # the Orchestrator control loop

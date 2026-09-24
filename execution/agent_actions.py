@@ -1,7 +1,7 @@
 import os
 import sys
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Add the project root to sys.path to allow importing dashboard_app
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,6 +54,30 @@ def trigger_ui_refresh(message="update", toast=None, employee_id=None, task_id=N
 
     # Run in a separate thread so it doesn't block the caller
     threading.Thread(target=_notify, daemon=True).start()
+
+def parse_github_timestamp(value):
+    """GraphQL ISO-8601 'Z' string -> naive-UTC datetime, matching TimestampMixin's convention.
+
+    Accepts a datetime too (normalized, not re-parsed). Returns None for None/''/unparseable
+    input and never raises, so a malformed field can't kill a sync cycle.
+
+    The explicit Z -> +00:00 rewrite is redundant on 3.11+ (fromisoformat handles Z since
+    3.11, and the container is 3.11.16) but keeps this working for a dev running the tests on
+    a 3.10 host.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
 
 def _resolve_system_id(session, github_repo):
     """Find-or-create the System matching a Project's github_repo org (e.g. "acme-org/foo" -> "acme-org")."""
@@ -254,7 +278,7 @@ def list_projects(system_id=None):
 
 # --- Task Operations ---
 
-def create_task(name, project_id, employee_id=None, status="Todo", github_issue_number=None, github_pr_number=None):
+def create_task(name, project_id, employee_id=None, status="Todo", github_issue_number=None, github_pr_number=None, github_created_at=None):
     session = get_session()
     try:
         task = Task(
@@ -263,7 +287,8 @@ def create_task(name, project_id, employee_id=None, status="Todo", github_issue_
             employee_id=employee_id if employee_id and employee_id > 0 else None,
             status=StatusEnum(status),
             github_issue_number=github_issue_number,
-            github_pr_number=github_pr_number
+            github_pr_number=github_pr_number,
+            github_created_at=parse_github_timestamp(github_created_at)
         )
         session.add(task)
         session.commit()
@@ -277,7 +302,7 @@ def create_task(name, project_id, employee_id=None, status="Todo", github_issue_
     finally:
         session.close()
 
-def update_task(task_id, status=None, name=None, employee_id=None, project_id=None, github_issue_number=None, github_pr_number=None, github_review_state=None):
+def update_task(task_id, status=None, name=None, employee_id=None, project_id=None, github_issue_number=None, github_pr_number=None, github_review_state=None, github_created_at=None):
     session = get_session()
     try:
         task = session.query(Task).get(task_id)
@@ -312,6 +337,17 @@ def update_task(task_id, status=None, name=None, employee_id=None, project_id=No
             if task.github_review_state != new_review_state:
                 task.github_review_state = new_review_state
                 changed = True
+        if github_created_at is not None:
+            new_github_created = parse_github_timestamp(github_created_at)
+            if new_github_created is not None and task.github_created_at != new_github_created:
+                task.github_created_at = new_github_created
+                # Deliberately does NOT set changed = True. This is machine-synced metadata
+                # with no user action behind it, so the self-heal write must not toast
+                # "Task 'X' updated" once per row the sync happens to touch -- and the 5s
+                # cadence would make that a toast (with sound) every five seconds. The
+                # commit below is unconditional, so the value still persists. This is a
+                # documented exception to flows.md's no-op suppression rule, not a
+                # violation: that rule exists to suppress meaningless toasts.
 
         session.commit()
         msg = f"Task '{task.name}' (ID: {task_id}) updated successfully."

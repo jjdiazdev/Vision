@@ -71,6 +71,13 @@ class Task(db.Model, TimestampMixin):
     github_issue_number = db.Column(db.Integer, nullable=True)
     github_pr_number = db.Column(db.Integer, nullable=True)
     github_review_state = db.Column(db.Enum(ReviewStateEnum), nullable=True, default=None)
+    # GitHub's own issue.createdAt, stored naive UTC to match TimestampMixin above.
+    # NOT interchangeable with created_at: created_at is local row-insert time, and 206 of
+    # 305 rows were inserted in bulk sync batches (102 inside 2026-08-24 10:34), where the
+    # insertion order is GitHub's updatedAt DESC at sync time -- frozen forever, and useless
+    # as a creation-order key. NULL means never synced: a manually created Task, or an issue
+    # GitHub no longer returns. See docs/domains/business_logic.md.
+    github_created_at = db.Column(db.DateTime, nullable=True)
 
     @property
     def review_state_class(self):

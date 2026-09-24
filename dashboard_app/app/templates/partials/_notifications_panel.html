@@ -7,8 +7,27 @@
          style="display:none;">
     </div>
 
-    <h3 class="card-title">Notification History</h3>
-    <p class="card-subtitle">Catch up on changes you may have missed</p>
+    <div class="notifications-header">
+        <div class="notifications-header-text">
+            <h3 class="card-title">Notification History</h3>
+            <p class="card-subtitle">Catch up on changes you may have missed</p>
+        </div>
+        {% if notifications %}
+        <!-- hx-target/hx-swap are declared on the button itself, never on the wrapper above:
+             an ancestor that declares them gets inherited by hx-boost-driven links nested
+             inside it, which is the exact bug .notification-item already caused once
+             (see docs/domains/flows.md). -->
+        <button class="notifications-clear-all"
+                hx-post="{{ url_for('main.delete_all_notifications') }}"
+                hx-target=".notifications-container"
+                hx-swap="outerHTML"
+                hx-confirm="Clear all {{ notifications|length }} notifications from the history? This cannot be undone."
+                title="Clear the whole notification history"
+                aria-label="Clear all notifications">
+            <i class="bi bi-trash"></i> Clear all
+        </button>
+        {% endif %}
+    </div>
 
     <div class="table-scroll-region">
         {% for n in notifications %}
@@ -32,7 +51,7 @@
                         {{ n.employee.name }}
                     </span>
                     {% endif %}
-                    <span class="notification-time">{{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                    <span class="notification-time">{{ n.created_at | localtime('%Y-%m-%d %H:%M') }}</span>
                 </div>
             {% if n.project_id %}
             </a>

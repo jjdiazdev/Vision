@@ -59,6 +59,7 @@ def _issue_fields(pr_ref_fields):
     return f"""
         number
         title
+        createdAt
         updatedAt
         closed
         assignees(first: 5) {{ nodes {{ login }} }}
@@ -320,6 +321,9 @@ def sync_once(session, last_polled):
                     update_kwargs["status"] = computed_status.value
                 if pr_number:
                     update_kwargs["github_pr_number"] = pr_number
+                # Self-heals rows the one-time backfill missed. Written silently by
+                # update_task (no `changed` flag), so this cannot toast.
+                update_kwargs["github_created_at"] = issue.get("createdAt")
                 agent_actions.update_task(existing_task.id, **update_kwargs)
                 session.commit()
                 summary["updated"] += 1
@@ -333,6 +337,7 @@ def sync_once(session, last_polled):
                 agent_actions.create_task(
                     title, project.id, employee_id, computed_status.value,
                     github_issue_number=number, github_pr_number=pr_number,
+                    github_created_at=issue.get("createdAt"),
                 )
                 session.commit()
                 summary["created"] += 1
@@ -405,6 +410,7 @@ def sync_active_tasks_once(session):
                 update_kwargs["status"] = computed_status.value
             if pr_number:
                 update_kwargs["github_pr_number"] = pr_number
+            update_kwargs["github_created_at"] = issue.get("createdAt")
 
             agent_actions.update_task(task.id, **update_kwargs)
             session.commit()

@@ -42,6 +42,7 @@ erDiagram
         int github_issue_number
         int github_pr_number
         enum github_review_state
+        datetime github_created_at
     }
 
     NOTIFICATION {
@@ -100,7 +101,15 @@ erDiagram
 reserved for Tasks only and filtered out of Project status dropdowns —
 `execution/repetition_processor.py` resets a repeating Task back to `Todo` on the appropriate
 cadence (daily; weekly on Monday; monthly on the 1st), each time its `updated_at` predates the
-reset boundary.
+reset boundary. **That boundary is the local calendar day in `DISPLAY_TIMEZONE`** — local
+midnight / local Monday / the local 1st — not UTC midnight (see
+`adr/0002-store-utc-display-local.md`). Both sides of the comparison are converted:
+`updated_at` is stored naive UTC, so converting only "today" would swap one off-by-one for
+another (a Task updated `2026-09-09 02:00Z` has UTC date 09-09 but Caracas date 09-08).
+`DISPLAY_TIMEZONE` defaults to `UTC`, which makes the whole conversion an identity — so the
+default configuration behaves exactly as it did before this was introduced. Nothing schedules
+this processor automatically: the only callers are `flask process-repetitions`, the module's
+own `__main__`, and the tests, so a correct *boundary* is not the same as a timely reset.
 
 ## Auto-status rules (`execution/github_sync.py`)
 
@@ -119,6 +128,13 @@ see that module's own docstring for the authoritative, always-current version; s
   `closedByPullRequestsReferences` connection, so this specific case is detected via a separate
   `timelineItems` (`CROSS_REFERENCED_EVENT`) query instead — see `_abandoned_pr_refs`.
 - Any `Repeat_*` status is always left untouched by sync.
+- **Sync scope — a `Blocked` Project is skipped entirely, by both cadences.** `sync_once` and
+  `sync_active_tasks_once` both filter `Project.status != StatusEnum.BLOCKED` (and
+  `github_repo IS NOT NULL`), so while a Project is Blocked none of its Tasks are reconciled *and*
+  none of its new issues are discovered — the rules above simply do not run for it, silently, with
+  nothing logged to distinguish "nothing changed" from "not looked at." Its rows keep whatever
+  status/assignee they last had and issues opened since it was blocked have no Task at all. This
+  is the one case where a local, hand-set status or assignee on a GitHub-linked Task is durable.
 - Employee assignment is always overwritten to mirror GitHub's current single-assignee resolution
   (0 or 2+ assignees → unassigned).
 
@@ -152,8 +168,32 @@ discovery pass keeps the original, cheaper `ISSUE_FIELDS`.
 
 ## Task list ordering and visibility
 
-- `sort_tasks()` (`dashboard_app/app/main/routes.py`) orders the Tasks table as: **Testing → 
-  In-Progress → Todo → Repeat_\* → Done → Blocked**.
+- `sort_tasks()` (`dashboard_app/app/main/routes.py`) is the **single ordering authority** for
+  every Tasks-view rendering path — none of the three queries carries an `order_by`. It sorts on
+  two levels, as two stable passes (one key cannot mix an ascending field with a descending one
+  without negating a datetime):
+  1. **status bucket**: **Testing → In-Progress → Todo → Repeat_\* → Done → Blocked**
+  2. **within a bucket**: newest GitHub issue first, by `Task.github_created_at` descending.
+- `github_created_at` holds **GitHub's own `issue.createdAt`**, naive UTC, and is *not*
+  interchangeable with the inherited `created_at`. `created_at` is local row-insert time, and
+  206 of 306 rows were inserted in bulk sync batches — 102 of them inside the single minute
+  `2026-08-24 10:34` — so within a batch its order is GitHub's `updatedAt DESC` at sync time,
+  frozen forever. Measured consequence: task 301 (issue #22) was inserted *before* task 302
+  (issue #21), so ordering by `created_at` put the older issue first. Do not reach for that
+  shortcut again.
+- **Tie-breaks**, in order after `github_created_at`: `github_issue_number` descending (GitHub's
+  `createdAt` has only 1-second resolution and numbers issues monotonically per repo, so
+  burst-created issues genuinely collide), then local `created_at`, then `id`. The key ends in
+  `id`, making it a *total* order — the result never depends on the DB's unordered row order.
+- **NULL policy**: a Task with no `github_created_at` (created by hand, or an issue GitHub no
+  longer returns) sorts to the **end of its status bucket** rather than being interleaved on a
+  fake date. That keeps the gap visible and self-correcting once sync populates the field.
+- Populated by **both** sync cadences (`issue.get("createdAt")` into `create_task`/`update_task`)
+  plus a one-time backfill for pre-existing rows, which neither cadence would ever visit:
+  `docker exec vision-web-1 python -m execution.backfill_github_created_at [--dry-run]`.
+  The backfill writes through the SQLAlchemy session directly, never `agent_actions.update_task`
+  — 306 calls through that would fire 306 `trigger_ui_refresh()`: 306 Notification rows, 306 SSE
+  announcements and 306 toast sounds.
 - Every Tasks-view query (`tasks_list`, `api_tasks_updates`, and `update_task_status`'s
   tasks-refresh branch) unconditionally excludes Tasks whose Project has `status == Blocked`
   (`Task.query.join(Project).filter(Project.status != StatusEnum.BLOCKED)`, all three sites in

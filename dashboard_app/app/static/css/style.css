@@ -909,6 +909,41 @@ tbody tr:hover {
 }
 
 /* Notification History panel (dashboard-only) */
+.notifications-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+.notifications-header-text {
+    min-width: 0;
+}
+/* .card-subtitle's own 24px bottom margin now sits inside .notifications-header-text, which
+   is what still separates the header from .table-scroll-region below it. */
+.notifications-clear-all {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(226, 232, 240, 0.1);
+    border-radius: var(--border-radius-md);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1;
+    white-space: nowrap;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+/* Same destructive hover treatment as the per-row .notification-dismiss below, so the two
+   delete affordances in this card read as the same kind of action. */
+.notifications-clear-all:hover {
+    background: rgba(248, 81, 73, 0.15);
+    border-color: var(--accent-red);
+    color: var(--accent-red);
+}
 .notification-item {
     display: flex;
     justify-content: space-between;

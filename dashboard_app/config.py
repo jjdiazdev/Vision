@@ -19,6 +19,12 @@ class Config:
     # Picovoice Configuration
     PICOVOICE_ACCESS_KEY = os.environ.get('PICOVOICE_ACCESS_KEY')
 
+    # Display timezone (IANA name, e.g. "America/Caracas"). Storage stays naive UTC — this
+    # only affects rendering, plus the local-calendar-day boundary that decides when a
+    # Repeat_* Task resets. See docs/adr/0002-store-utc-display-local.md. An invalid value
+    # degrades to UTC with an error logged at startup; it never prevents boot.
+    DISPLAY_TIMEZONE = os.environ.get('DISPLAY_TIMEZONE') or 'UTC'
+
     # Admin password gate (see docs/architecture/02-admin-password-gate.md) — a Werkzeug
     # password hash, not a plaintext password. No fallback: unset means every login attempt fails.
     ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD')

@@ -17,6 +17,11 @@ if os.path.exists(TEST_DB_PATH):
         pass
 
 os.environ['DATABASE_URL'] = f'sqlite:///{TEST_DB_PATH}'
+# Pin the reset boundary to UTC. process_repetitions() now derives the local calendar day from
+# DISPLAY_TIMEZONE, so without this the assertions below would depend on the ambient container
+# env -- and the midnight `updated_at` values in these suites are exactly what flips under a
+# negative-offset zone.
+os.environ['DISPLAY_TIMEZONE'] = 'UTC'
 
 from dashboard_app.app import create_app
 from dashboard_app.app.models import Task, StatusEnum, Project
