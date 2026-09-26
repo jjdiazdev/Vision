@@ -30,6 +30,20 @@ have id `0`). `github_review_state` (string/enum field) uses `""` (empty string,
 `None`). Reuse this pattern — don't introduce a new sentinel object — for the next nullable field
 that needs the same three-state (untouched / set / explicitly cleared) behavior.
 
+## No real organization, client, or repo names in versioned files
+
+The repo is meant to be publishable on GitHub. A real GitHub org name and one of its private repo
+names were once scattered across the seed data (`flask seed`), CLI help text, a docstring, an
+intent test, and several docs — none of them functionally needed, all just examples — and had to
+be scrubbed from the files *and* rewritten out of git history.
+
+**Rule**: in code, seed data, tests, `.env.example`, and `docs/`, use the fictitious placeholders
+`Acme` (System name) / `acme-org` (GitHub org) / `acme-org/firmware` (repo). Real orgs and repos
+are runtime data — `System.github_org` and `Project.github_repo`, entered through
+`agent_actions.create_system` / `create_project` — never configuration or literals. Don't add a
+`GITHUB_ORG`-style env var for this either: it would duplicate what the database already holds. In
+knowledge-base entries describing a real incident, refer to "a real Project" rather than naming it.
+
 ## Naming
 
 - **Title Case** for the names of Systems, Projects, Tasks, and Employees — enforced by the LLM
