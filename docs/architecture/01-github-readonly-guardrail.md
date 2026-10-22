@@ -33,8 +33,9 @@ One direction only: **read** issue/PR state from GitHub (GraphQL, queries only �
 into V.I.S.I.O.N.'s local database through `execution/agent_actions.py` (`create_task`,
 `update_task`, `create_employee`), or — for plan items only — directly into `PlanItem`'s live
 columns (`execution/plan_sync.py`), which are local display state with no GitHub counterpart.
-The plan query reads issue `state`/`stateReason` and, per linked PR, `isDraft`, `merged`,
-`reviewDecision`, `repository.nameWithOwner` and the last commit's `statusCheckRollup.state`. Projects (repos) are managed manually ahead of time —
+The plan query reads issue `state`/`stateReason` and, per linked PR, `title`, `headRefName`,
+`isDraft`, `merged`, `reviewDecision`, `repository.nameWithOwner`, `closingIssuesReferences` and
+the last commit's `statusCheckRollup.state`. Projects (repos) are managed manually ahead of time —
 `github_sync` never creates them, it only syncs Tasks inside Projects that already have
 `github_repo` configured. GitHub never receives a write originated from this project.
 

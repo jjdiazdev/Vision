@@ -121,9 +121,13 @@ pattern, so the codebase reuses instead of reinventing.
   `cerrada` as done (PM decision, 2026-10-22), so a Project's plan percentage and its Tasks'
   statuses agree on "done" even though the graph keeps the two states apart. Do not "fix" one to
   match the other.
-- **A cross-reference counts as a linked PR.** `Refs #N` only produces a `CROSS_REFERENCED_EVENT`,
-  so the plan sync has to read those; a PR that merely mentions `#N` in passing is treated the same.
-  Only same-repo PRs count, which removes most false positives.
+- **A cross-reference is not a link.** Plain `Refs #N` only shows up as a `CROSS_REFERENCED_EVENT`,
+  but so does any PR description that lists issues ("unblocks #426, #427"). The first real sync
+  (2026-10-22) attached one sub-teams PR to the six issues it named and painted them
+  "changes requested". A cross-referencing PR now counts only if it closes the issue
+  (`closingIssuesReferences`) or its head branch/title carries the number — the team's
+  `<type>/<issue>-<desc>` branch convention makes that reliable. A Refs-only PR on a branch that
+  doesn't follow the convention will be missed; prefer a closing keyword or the branch name.
 - **One Mermaid SVG per repo, not one SVG with subgraphs.** In a Mermaid flowchart a subgraph's
   nodes are siblings of its cluster box, not children, and edges are fixed paths — a subgraph
   cannot be moved after rendering without rewriting Mermaid's DOM. Rendering each repo on its own

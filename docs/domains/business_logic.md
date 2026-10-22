@@ -149,9 +149,12 @@ values double as CSS class suffixes. The module docstring is authoritative; summ
 | `fusionada` | selected PR merged, issue still open (staging/device check pending) |
 | `sinpr` | anything else, including an issue whose only PRs were closed without merging |
 
-- **Selected PR**: among PRs of the *same repo* linked by closing keyword / dev panel
-  (`closedByPullRequestsReferences`, closed ones included) or by a cross-reference (covers
-  `Refs #N`), the open one wins, else the merged one; the highest number breaks ties.
+- **Linked PRs** (same repo only): every PR in `closedByPullRequestsReferences` (closing keyword or
+  development panel, closed ones included), plus a cross-referencing PR only if it is *about* the
+  issue — it closes it, or its head branch (`feat/421-…`, `issue-421`) or title (`… (#421)`)
+  carries the number (`plan_sync.pr_is_about`). A PR that merely mentions the issue is ignored.
+- **Selected PR**: among the linked ones, the open one wins, else the merged one; the highest
+  number breaks ties.
 - A PR whose CI rollup is unreadable (`null` — no checks, or a token without commit-status read)
   is never `prbloq` on CI grounds.
 - **This is deliberately not the Task status rule.** A Task with a merged PR reads `Done`

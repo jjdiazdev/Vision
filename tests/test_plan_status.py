@@ -7,16 +7,19 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
 from execution.github_sync import GitHubWriteAttempt, assert_read_only, ISSUES_QUERY, ISSUE_FIELDS_WITH_REVIEW, RATE_LIMIT_QUERY
-from execution.plan_sync import PLAN_ITEM_FIELDS, compute_plan_snapshot, compute_plan_status, select_pr
+from execution.plan_sync import PLAN_ITEM_FIELDS, compute_plan_snapshot, compute_plan_status, pr_is_about, select_pr
 from dashboard_app.app.models import PlanStatusEnum
 
 REPO = "acme-org/api"
 
 
-def _pr(number, state="OPEN", merged=False, draft=False, ci=None, review=None, repo=REPO):
+def _pr(number, state="OPEN", merged=False, draft=False, ci=None, review=None, repo=REPO,
+        branch="feature/unrelated", title="Some change", closes=()):
     commit = {"statusCheckRollup": {"state": ci} if ci else None}
     return {"number": number, "state": state, "merged": merged, "isDraft": draft, "reviewDecision": review,
-            "repository": {"nameWithOwner": repo}, "commits": {"nodes": [{"commit": commit}]}}
+            "repository": {"nameWithOwner": repo}, "commits": {"nodes": [{"commit": commit}]},
+            "headRefName": branch, "title": title,
+            "closingIssuesReferences": {"nodes": [{"number": n} for n in closes]}}
 
 
 def _issue(state="OPEN", reason=None, closing=(), referencing=()):
@@ -57,9 +60,33 @@ class TestComputePlanStatus(unittest.TestCase):
         self.assertEqual(snap["plan_status"], PlanStatusEnum.MERGED)
         self.assertEqual(snap["pr_state"], "MERGED")
 
-    def test_refs_only_pr_is_found_through_cross_reference(self):
-        issue = _issue(referencing=[_pr(11, state="MERGED", merged=True)])
+    def test_refs_only_pr_is_found_through_its_branch(self):
+        issue = _issue(referencing=[_pr(11, state="MERGED", merged=True, branch="feat/7-user-list-api")])
         self.assertEqual(compute_plan_status(issue, REPO), PlanStatusEnum.MERGED)
+
+    def test_cross_reference_that_only_mentions_the_issue_is_ignored(self):
+        # Seen with real data: one PR listing "unblocks #7" was attached to every issue it named.
+        issue = _issue(referencing=[_pr(12, review="CHANGES_REQUESTED", branch="feat/425-sub-teams",
+                                        title="add sub-teams (#425)")])
+        snap = compute_plan_snapshot(issue, REPO)
+        self.assertEqual(snap["plan_status"], PlanStatusEnum.NO_PR)
+        self.assertIsNone(snap["pr_number"])
+
+    def test_cross_reference_that_closes_the_issue_counts(self):
+        issue = _issue(referencing=[_pr(13, closes=(7,))])
+        self.assertEqual(compute_plan_status(issue, REPO), PlanStatusEnum.PR_OPEN)
+
+    def test_closing_reference_counts_whatever_its_branch(self):
+        issue = _issue(closing=[_pr(14, branch="docs/update-agent-docs")])
+        self.assertEqual(compute_plan_status(issue, REPO), PlanStatusEnum.PR_OPEN)
+
+    def test_pr_is_about(self):
+        self.assertTrue(pr_is_about(_pr(1, branch="feat/7-x"), 7))
+        self.assertTrue(pr_is_about(_pr(1, branch="issue-7"), 7))
+        self.assertTrue(pr_is_about(_pr(1, branch="fix/issue-7-null"), 7))
+        self.assertTrue(pr_is_about(_pr(1, title="feat(api): thing (#7)"), 7))
+        self.assertFalse(pr_is_about(_pr(1, branch="feat/77-x", title="thing (#77)"), 7))
+        self.assertFalse(pr_is_about(_pr(1, branch="feat/170-x", title="mentions #7 in passing"), 7))
 
     def test_closed_issue_is_cerrada_even_without_pr(self):
         self.assertEqual(compute_plan_status(_issue(state="CLOSED", reason="COMPLETED"), REPO), PlanStatusEnum.CLOSED)
@@ -69,7 +96,7 @@ class TestComputePlanStatus(unittest.TestCase):
             self.assertEqual(compute_plan_status(_issue(state="CLOSED", reason=reason), REPO), PlanStatusEnum.NOT_PLANNED)
 
     def test_only_abandoned_pr_is_sinpr(self):
-        issue = _issue(referencing=[_pr(12, state="CLOSED")])
+        issue = _issue(referencing=[_pr(12, state="CLOSED", branch="feat/7-x")])
         snap = compute_plan_snapshot(issue, REPO)
         self.assertEqual(snap["plan_status"], PlanStatusEnum.NO_PR)
         self.assertIsNone(snap["pr_number"])
@@ -81,7 +108,7 @@ class TestComputePlanStatus(unittest.TestCase):
         self.assertEqual(snap["plan_status"], PlanStatusEnum.PR_BLOCKED)
 
     def test_prs_from_other_repos_are_ignored(self):
-        issue = _issue(referencing=[_pr(20, repo="acme-org/web")])
+        issue = _issue(referencing=[_pr(20, repo="acme-org/web", branch="feat/7-x")])
         self.assertEqual(compute_plan_status(issue, REPO), PlanStatusEnum.NO_PR)
 
     def test_repo_match_is_case_insensitive(self):

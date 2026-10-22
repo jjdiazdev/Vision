@@ -17,9 +17,11 @@ with the project's dependencies installed.
   unchanged, newest-`github_created_at`-first within a bucket, NULLs last in their bucket,
   same-second ties broken by issue number, `created_at=None` and mixed naive/aware values not
   raising, and output independence from input order. Stub objects, no DB.
-- **`tests/test_plan_status.py`** (20 tests) — `execution/plan_sync.py`'s plan status rule
+- **`tests/test_plan_status.py`** (24 tests) — `execution/plan_sync.py`'s plan status rule
   (every `PlanStatusEnum` branch: draft, red CI, changes requested, unreadable CI, merged with the
-  issue open, `Refs`-only PRs via cross-reference, not-planned/duplicate, abandoned-only PRs,
+  issue open, PR linking — `Refs`-only PRs found by branch, a cross-reference that only *mentions*
+  the issue ignored, cross-references that close it counted, `pr_is_about` branch/title matching
+  without false hits on `#77`/`#170` — not-planned/duplicate, abandoned-only PRs,
   open-beats-merged, other-repo PRs ignored, case-insensitive repo match) and
   `github_sync.assert_read_only` (every project query passes; `mutation`/`subscription`
   rejected, including after a query in the same document; the word inside strings, comments

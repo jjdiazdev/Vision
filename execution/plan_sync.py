@@ -14,13 +14,17 @@ Plan status rule (the plan documents' status-color rule, computed by compute_pla
 - fusionada   selected PR merged, issue still open
 - sinpr       anything else, including only closed-unmerged PRs
 
-Selected PR: among PRs of the SAME repo linked by closing keyword/dev panel or by a
-cross-reference (covers "Refs #N"), the open one wins, else the merged one; highest number
-breaks ties. A cross-reference that merely mentions the issue also counts -- accepted risk.
-A PR whose CI rollup can't be read (null) is never treated as failing.
+Linked PRs (same repo only): every PR GitHub lists as closing the issue (closing keyword or the
+development panel), plus a cross-referencing PR only if it is *about* this issue -- it closes
+it, or its head branch (`feat/421-...`) or title (`... (#421)`) carries the issue number. A PR
+that merely mentions the issue (e.g. "unblocks #426" in its description) is not linked: with
+real data that attached one PR to every issue it listed. See docs/memory/knowledge_base.md.
+Selected PR: the open one wins, else the merged one; highest number breaks ties. A PR whose CI
+rollup can't be read (null) is never treated as failing.
 """
 
 import logging
+import re
 from datetime import datetime
 
 from execution import agent_actions
@@ -29,8 +33,9 @@ from dashboard_app.app.models import Plan, PlanItem, PlanStatusEnum
 
 logger = logging.getLogger("plan_sync")
 
-PLAN_PR_FIELDS = """number state isDraft merged reviewDecision
+PLAN_PR_FIELDS = """number title headRefName state isDraft merged reviewDecision
             repository { nameWithOwner }
+            closingIssuesReferences(first: 5) { nodes { number } }
             commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }"""
 
 PLAN_ITEM_FIELDS = f"""
@@ -70,18 +75,35 @@ SNAPSHOT_FIELDS = ("github_title", "issue_state", "issue_state_reason", "pr_numb
                    "pr_is_draft", "pr_ci_state", "pr_review_decision", "plan_status")
 
 
+def _same_repo(pr, repo):
+    return ((pr.get("repository") or {}).get("nameWithOwner") or "").lower() == repo.lower()
+
+
+def pr_is_about(pr, issue_number):
+    """Whether a cross-referencing PR implements this issue rather than just mentioning it: it
+    closes it, or its branch (`<type>/<N>-<desc>`, `issue-N`, ...) or title (`(#N)`) names it."""
+    closes = ((pr.get("closingIssuesReferences") or {}).get("nodes")) or []
+    if any(n.get("number") == issue_number for n in closes):
+        return True
+    n = str(issue_number)
+    branch = pr.get("headRefName") or ""
+    if re.search(rf"(^|[/_-]){n}($|[/_-])", branch):
+        return True
+    return re.search(rf"\(#{n}\)", pr.get("title") or "") is not None
+
+
 def _linked_prs(issue, repo):
-    """Same-repo PRs linked to `issue`, deduped by number."""
-    candidates = list(issue["closedByPullRequestsReferences"]["nodes"])
+    """Same-repo PRs linked to `issue`, deduped by number: closing PRs always, cross-references
+    only when pr_is_about the issue."""
+    prs = {}
+    for pr in issue["closedByPullRequestsReferences"]["nodes"]:
+        if _same_repo(pr, repo):
+            prs[pr["number"]] = pr
     for node in issue["timelineItems"]["nodes"]:
         source = (node or {}).get("source") or {}
-        if "number" in source and "state" in source:
-            candidates.append(source)
-    prs = {}
-    for pr in candidates:
-        owner_repo = ((pr.get("repository") or {}).get("nameWithOwner") or "").lower()
-        if owner_repo == repo.lower():
-            prs[pr["number"]] = pr
+        if ("number" in source and "state" in source and _same_repo(source, repo)
+                and source["number"] not in prs and pr_is_about(source, issue["number"])):
+            prs[source["number"]] = source
     return list(prs.values())
 
 
