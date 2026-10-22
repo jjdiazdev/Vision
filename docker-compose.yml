@@ -28,9 +28,11 @@ services:
       - .env
     environment:
       - DATABASE_URL=sqlite:////app/dashboard_app/instance/app.db
-      - SYNC_INTERVAL_SECONDS=5
-      - DISCOVERY_INTERVAL_SECONDS=60
-      - PLAN_SYNC_INTERVAL_SECONDS=15
+      # Defaults only: `environment:` overrides env_file, so a hard-coded value here would silently
+      # ignore whatever .env sets. ${VAR:-default} reads .env (Compose interpolation) first.
+      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-5}
+      - DISCOVERY_INTERVAL_SECONDS=${DISCOVERY_INTERVAL_SECONDS:-60}
+      - PLAN_SYNC_INTERVAL_SECONDS=${PLAN_SYNC_INTERVAL_SECONDS:-15}
     # Bypasses the image's migration-running entrypoint (Dockerfile) -- only `web` runs
     # migrations, so two containers never try to migrate the same SQLite file at once.
     entrypoint: ["python", "-m", "execution.github_sync_worker"]

@@ -102,7 +102,8 @@ work whatever the folder is called.
 ### Prerequisites
 - [Docker](https://www.docker.com/) with the Compose v2 plugin (`docker compose version`).
 - A GitHub account with access to the organization and repositories you want to monitor.
-- Port `5001` free (the dashboard) and, unless you follow step 2, port `11434` (Ollama).
+- Port `5001` free (the dashboard) and, only if you run the local LLM, port `11434` (Ollama) —
+  see step 2.
 
 ### Step 1 — Create a read-only GitHub token
 
@@ -125,18 +126,27 @@ If your organization does not allow fine-grained tokens, a classic token with th
 works too. It cannot be restricted to read-only on GitHub's side, but this project's code refuses
 to send any write (`execution/github_sync.py::graphql_query`).
 
-### Step 2 — Check the Ollama port
+### Step 2 — Decide whether you need Ollama
 
-The `ollama` service publishes port `11434`. If Ollama already runs on your machine
-(`ss -ltn | grep 11434`), either stop it (`sudo systemctl stop ollama`), or keep it and create a
-local `docker-compose.override.yml` (git-ignored) so the container does not publish the port (the
-dashboard reaches it over Docker's internal network and does not need it on the host):
+Ollama (the local LLM) is used **only by the HUD chat and voice commands**. The dashboard, the
+GitHub sync, plans and the plan graph never call it. If an external agent such as Claude Code is
+your executor (it runs `execution/agent_actions.py` directly), you don't need Ollama at all:
 
-```yaml
-services:
-  ollama:
-    ports: !reset []
-```
+- **Without Ollama:** start only the two services you need — step 5 shows the command. Nothing
+  binds port `11434` and no model is downloaded. The HUD chat answers with an error toast if used,
+  and you can leave every `OLLAMA_*`, cloud LLM and `PICOVOICE_ACCESS_KEY` value at its
+  placeholder.
+- **With Ollama:** the `ollama` service publishes port `11434`. If Ollama already runs on your
+  machine (`ss -ltn | grep 11434`), either stop it (`sudo systemctl stop ollama`), or keep it and
+  create a local `docker-compose.override.yml` (git-ignored) so the container does not publish
+  the port (the dashboard reaches it over Docker's internal network and does not need it on the
+  host):
+
+  ```yaml
+  services:
+    ollama:
+      ports: !reset []
+  ```
 
 ### Step 3 — Clone and build
 
@@ -161,8 +171,9 @@ Then edit `.env` (it is git-ignored; never commit it):
 | `GITHUB_TOKEN` | The token from step 1 |
 | `DISPLAY_TIMEZONE` | Your IANA zone, e.g. `America/Caracas` (default `UTC`) |
 | `SYNC_INTERVAL_SECONDS` / `DISCOVERY_INTERVAL_SECONDS` / `PLAN_SYNC_INTERVAL_SECONDS` | Leave at `5` / `60` / `15` unless you hit GitHub rate limits |
-| `OLLAMA_MODEL` | Defaults to `phi3.5`; any model Ollama can pull |
+| `OLLAMA_MODEL` | Only with Ollama (step 2). Defaults to `phi3.5`; any model Ollama can pull |
 | `NVIDIA_*` / `OPENAI_*` / `ANTHROPIC_*` / `GEMINI_*` | Optional — only for a cloud LLM backend in the HUD settings |
+| `PICOVOICE_ACCESS_KEY` | Optional — only for the HUD wake word |
 
 **Password hash.** Generate it with the image you just built, so your host needs no Python
 packages; it prompts for the password without echoing it:
@@ -176,17 +187,35 @@ Paste the output into `ADMIN_PASSWORD=` and **double every `$` to `$$`**
 it, which makes every login fail with no visible error. Details:
 [Admin Password Gate](#-admin-password-gate).
 
-### Step 5 — Start everything
+### Step 5 — Start
+
+**Without Ollama** (an external agent is your executor):
+
+```bash
+docker compose up -d --no-deps web github-sync
+```
+
+`--no-deps` is what keeps Compose from also starting `ollama`, which `web` declares as a
+dependency. Use the same form for every later `up` (add `--build` after code changes).
+
+**With Ollama** (the HUD chat uses the local LLM):
 
 ```bash
 docker compose up -d
+```
+
+This also starts `ollama`; its first start pulls the model, which can take several minutes.
+
+Either way, check that the database is ready:
+
+```bash
+docker compose ps
 docker compose logs web | grep -i -e "running upgrade" -e error
 ```
 
-This starts `web` (the dashboard), `github-sync` (the read-only GitHub worker) and `ollama`. On
-every start `web` applies pending database migrations; on a first run that creates
-`dashboard_app/instance/app.db` from scratch (it is git-ignored). The first start also pulls the
-Ollama model, which can take several minutes.
+`web` (the dashboard) applies pending database migrations on every start; on a first run that
+creates `dashboard_app/instance/app.db` from scratch (it is git-ignored). `github-sync` is the
+read-only GitHub worker.
 
 Open **http://localhost:5001** and log in with your password.
 
@@ -224,7 +253,7 @@ docker compose logs -f github-sync
 |---|---|
 | `Created Task for your-org/api#N …` | Working |
 | `Repository … not found or not accessible` | The token can't see that repo — check step 1 (repo selected, org approval) |
-| `GITHUB_TOKEN is not set` | `.env` wasn't loaded — `docker compose up -d --force-recreate` |
+| `GITHUB_TOKEN is not set` | `.env` wasn't loaded — recreate the containers (see Day-to-day) |
 | `GitHub rate limit low … pausing` | Budget below 50 points; every cadence resumes on its own at the next discovery check |
 
 ### Step 8 — Import your current plan (optional, recommended)
@@ -234,9 +263,11 @@ plan — see [Weekly Implementation Plans](#-weekly-implementation-plans).
 
 ### Day-to-day
 
-- **After pulling code changes:** `docker compose up -d --build` rebuilds and restarts.
-- **After editing `.env`:** `docker compose up -d --force-recreate` (`docker restart` keeps the
-  old environment).
+- **After pulling code changes:** add `--build` to your start command — without Ollama
+  `docker compose up -d --build --no-deps web github-sync`, with Ollama `docker compose up -d --build`.
+- **After editing `.env`:** add `--force-recreate` the same way (`docker restart` keeps the old
+  environment) — e.g. `docker compose up -d --force-recreate --no-deps web github-sync`.
+- **Stop everything:** `docker compose down` (the database stays in `dashboard_app/instance/`).
 - **Back up the database** before upgrades: `cp dashboard_app/instance/app.db app.db.bak` (with
   the containers stopped, or include the `-wal` file).
 - The exact edit-vs-restart rules for working on the code are in
@@ -345,7 +376,8 @@ the password):
     separator (e.g. `scrypt:32768:8:1$salt$hash`), so pasting it in unescaped corrupts the stored hash
     and every login attempt fails with no visible error.
 4.  **Recreate the `web` container** for the new `.env` values to load —
-    `docker restart` alone does *not* re-read `.env`; use `docker compose up -d --force-recreate web`.
+    `docker restart` alone does *not* re-read `.env`; use
+    `docker compose up -d --force-recreate --no-deps web`.
 
 Full design notes and known limitations (no per-user accounts, no brute-force lockout — deliberate,
 not oversights): [`docs/architecture/02-admin-password-gate.md`](docs/architecture/02-admin-password-gate.md).
