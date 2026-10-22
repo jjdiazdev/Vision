@@ -11,3 +11,5 @@ __pycache__/
 *.db-wal
 *.DS_Store
 .agent/memory/session_log.md
+# Machine-specific Compose tweaks (e.g. not publishing the Ollama port)
+docker-compose.override.yml

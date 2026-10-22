@@ -94,96 +94,189 @@ not duplicated here to avoid the two drifting apart.
 
 ## ⚙️ Setup & Installation
 
+This is the full path from a clean clone to a dashboard tracking your own GitHub organization.
+Run every command from the repository root. Commands use Docker Compose v2 (`docker compose`,
+with a space) and address containers by **service name** (`docker compose exec web …`), so they
+work whatever the folder is called.
+
 ### Prerequisites
-- [Docker](https://www.docker.com/) & Docker Compose
-- [Ollama](https://ollama.com/) (only if you want to run it locally outside Docker — the `ollama` service in Compose already handles this for you otherwise)
-- A GitHub Personal Access Token, **only if you want the GitHub-monitoring feature** (see below) — everything else works without one.
+- [Docker](https://www.docker.com/) with the Compose v2 plugin (`docker compose version`).
+- A GitHub account with access to the organization and repositories you want to monitor.
+- Port `5001` free (the dashboard) and, unless you follow step 2, port `11434` (Ollama).
 
-### Installation
+### Step 1 — Create a read-only GitHub token
 
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/your-repo/v-i-s-i-o-n.git
-    cd v-i-s-i-o-n
-    ```
+V.I.S.I.O.N. only ever **reads** GitHub; the token should not be able to do anything else
+(see [`docs/architecture/01-github-readonly-guardrail.md`](docs/architecture/01-github-readonly-guardrail.md)).
 
-2.  **Environment Setup:**
-    ```bash
-    cp .env.example .env
-    ```
-    Open `.env` and set at minimum:
-    - `SECRET_KEY` — any random string.
-    - `OLLAMA_MODEL` — defaults to `phi3.5`; any model Ollama can pull works.
-    - `GITHUB_TOKEN` and the two sync-interval vars — **only needed for GitHub monitoring**, see the dedicated section below. Leave `GITHUB_TOKEN` unset and the rest of the dashboard works fine; the `github-sync` container will simply have nothing to poll.
-    - The `NVIDIA_*` / `OPENAI_*` / `ANTHROPIC_*` / `GEMINI_*` keys are optional — only needed if you turn on a cloud LLM backend from the HUD's settings.
+1.  GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens →
+    Generate new token**.
+2.  **Resource owner**: your organization. **Repository access**: *Only select repositories*, and
+    pick the repos you want to monitor (you can add more later by editing the token).
+3.  **Repository permissions**, all **Read-only**:
+    - Contents, Metadata, Issues, Pull requests — issue and PR state.
+    - Commit statuses — CI color in the plan graph.
+    - Checks — also recommended: GitHub Actions reports through check runs.
+4.  If your organization requires approval for fine-grained tokens, an owner approves it under
+    **Organization settings → Personal access tokens → Pending requests**. Until then every repo
+    reads as "not found".
 
-3.  **Launch with Docker:**
-    ```bash
-    docker-compose up --build
-    ```
-    This builds and starts all three services — `web`, `github-sync`, and `ollama` — in one command. The `web` container applies any pending database migrations automatically on startup (its entrypoint runs `flask db upgrade` before the app starts) — you don't need to create or seed `dashboard_app/instance/app.db` yourself; it's created from scratch on first run and isn't tracked in git. On first run, Ollama also automatically pulls the model specified in `.env` (e.g. `phi3.5`), which can take several minutes depending on your connection.
+If your organization does not allow fine-grained tokens, a classic token with the `repo` scope
+works too. It cannot be restricted to read-only on GitHub's side, but this project's code refuses
+to send any write (`execution/github_sync.py::graphql_query`).
 
-4.  **Access the Dashboard:**
-    Open `http://localhost:5001` in your browser.
+### Step 2 — Check the Ollama port
 
-5.  **Subsequent restarts:** after pulling code changes, `docker-compose up --build` again to rebuild the images; day-to-day, `docker restart v-i-s-i-o-n-web-1` (or `v-i-s-i-o-n-github-sync-1`) is enough to pick up a file that was `docker cp`'d in without a full rebuild — see [`docs/governance/01-development-workflow.md`](docs/governance/01-development-workflow.md) for exactly when each is needed.
+The `ollama` service publishes port `11434`. If Ollama already runs on your machine
+(`ss -ltn | grep 11434`), either stop it (`sudo systemctl stop ollama`), or keep it and create a
+local `docker-compose.override.yml` (git-ignored) so the container does not publish the port (the
+dashboard reaches it over Docker's internal network and does not need it on the host):
+
+```yaml
+services:
+  ollama:
+    ports: !reset []
+```
+
+### Step 3 — Clone and build
+
+```bash
+git clone <this repository's URL> vision
+cd vision
+docker compose build
+```
+
+### Step 4 — Configure `.env`
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` (it is git-ignored; never commit it):
+
+| Variable | Value |
+|---|---|
+| `SECRET_KEY` | A random secret: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
+| `ADMIN_PASSWORD` | The dashboard password **hash** — see below |
+| `GITHUB_TOKEN` | The token from step 1 |
+| `DISPLAY_TIMEZONE` | Your IANA zone, e.g. `America/Caracas` (default `UTC`) |
+| `SYNC_INTERVAL_SECONDS` / `DISCOVERY_INTERVAL_SECONDS` / `PLAN_SYNC_INTERVAL_SECONDS` | Leave at `5` / `60` / `15` unless you hit GitHub rate limits |
+| `OLLAMA_MODEL` | Defaults to `phi3.5`; any model Ollama can pull |
+| `NVIDIA_*` / `OPENAI_*` / `ANTHROPIC_*` / `GEMINI_*` | Optional — only for a cloud LLM backend in the HUD settings |
+
+**Password hash.** Generate it with the image you just built, so your host needs no Python
+packages; it prompts for the password without echoing it:
+
+```bash
+docker compose run --rm --no-deps --entrypoint python web -c "import getpass; from werkzeug.security import generate_password_hash as g; print(g(getpass.getpass()))"
+```
+
+Paste the output into `ADMIN_PASSWORD=` and **double every `$` to `$$`**
+(`scrypt:32768:8:1$$salt$$hash`). Compose treats a bare `$word` as a variable and silently blanks
+it, which makes every login fail with no visible error. Details:
+[Admin Password Gate](#-admin-password-gate).
+
+### Step 5 — Start everything
+
+```bash
+docker compose up -d
+docker compose logs web | grep -i -e "running upgrade" -e error
+```
+
+This starts `web` (the dashboard), `github-sync` (the read-only GitHub worker) and `ollama`. On
+every start `web` applies pending database migrations; on a first run that creates
+`dashboard_app/instance/app.db` from scratch (it is git-ignored). The first start also pulls the
+Ollama model, which can take several minutes.
+
+Open **http://localhost:5001** and log in with your password.
+
+### Step 6 — Choose the repositories to monitor
+
+Only repositories linked to a **Project** are monitored; the worker never discovers repos on its
+own. Link one Project per repo:
+
+```bash
+docker compose exec web python -m execution.agent_actions project --create api --github-repo your-org/api
+docker compose exec web python -m execution.agent_actions project --create web --github-repo your-org/web
+docker compose exec web python -m execution.agent_actions project --list
+```
+
+The parent **System** (your organization) is created automatically from the repo owner. No restart
+is needed: the next discovery cycle (within `DISCOVERY_INTERVAL_SECONDS`) picks the repos up.
+
+> **First sync reads the whole history.** Each repo's first pass reads every issue, open and
+> closed, and creates one Task per issue. Large repos take several 60-second cycles and use more of
+> your GitHub API budget. To stop reading a repo, set its Project to **Blocked** in `/projects`.
+
+To link an existing Project to another repo, or assign it to a specific System:
+
+```bash
+docker compose exec web python -m execution.agent_actions project --update <PROJECT_ID> --github-repo your-org/another-repo --system-id <SYSTEM_ID>
+```
+
+### Step 7 — Verify the sync
+
+```bash
+docker compose logs -f github-sync
+```
+
+| You see | Meaning |
+|---|---|
+| `Created Task for your-org/api#N …` | Working |
+| `Repository … not found or not accessible` | The token can't see that repo — check step 1 (repo selected, org approval) |
+| `GITHUB_TOKEN is not set` | `.env` wasn't loaded — `docker compose up -d --force-recreate` |
+| `GitHub rate limit low … pausing` | Budget below 50 points; every cadence resumes on its own at the next discovery check |
+
+### Step 8 — Import your current plan (optional, recommended)
+
+To make progress count only this cycle's issues and get the live dependency graph, import your
+plan — see [Weekly Implementation Plans](#-weekly-implementation-plans).
+
+### Day-to-day
+
+- **After pulling code changes:** `docker compose up -d --build` rebuilds and restarts.
+- **After editing `.env`:** `docker compose up -d --force-recreate` (`docker restart` keeps the
+  old environment).
+- **Back up the database** before upgrades: `cp dashboard_app/instance/app.db app.db.bak` (with
+  the containers stopped, or include the `-wal` file).
+- The exact edit-vs-restart rules for working on the code are in
+  [`docs/governance/01-development-workflow.md`](docs/governance/01-development-workflow.md).
 
 ---
 
 ## 🔗 Monitoring GitHub Development
 
-V.I.S.I.O.N. can track Issues and Pull Requests across your GitHub organization's repos automatically, entirely read-only — it never creates, edits, closes, or comments on anything in GitHub. The full guardrail is documented in [`docs/architecture/01-github-readonly-guardrail.md`](docs/architecture/01-github-readonly-guardrail.md); the practical steps to turn it on are below.
+V.I.S.I.O.N. tracks Issues and Pull Requests across your organization's repos automatically, and
+entirely read-only — it never creates, edits, closes or comments on anything in GitHub. Setup is
+steps 1, 6 and 7 above.
 
-### 1. Create a read-only GitHub token
+### Assignees and team members
 
-Generate a Personal Access Token with **only** these permissions, all set to **Read-only**:
-`Contents`, `Metadata`, `Issues`, `Pull requests`, `Commit statuses`.
+An issue's assignee becomes a team member (Employee) automatically, matched by **exact GitHub
+login**. If you create team members by hand (or ask an agent to bootstrap them from the org's
+contributors), set each `name` to the contributor's exact login (e.g. `octocat`), not a display
+name; otherwise the sync creates a second, duplicate member.
 
-- A **fine-grained PAT** works if your GitHub organization allows fine-grained PAT access for members and the token's Resource Owner is set to that organization.
-- Otherwise, a **classic PAT** with the `repo` scope is the reliable fallback for private repos (a classic PAT can't be restricted to read-only at the GitHub UI level, but this project's code enforces the read-only limit in software regardless — see the guardrail doc).
-
-### 2. Configure `.env`
-
-```bash
-GITHUB_TOKEN=your_github_personal_access_token_here
-SYNC_INTERVAL_SECONDS=5       # fast recheck of Tasks already In-Progress/Testing
-DISCOVERY_INTERVAL_SECONDS=60 # slow full scan: discovers new issues, reconciles everything
-```
-The defaults above are sensible for most cases — only tune them if you have unusually high GitHub API rate-limit pressure (many repos, many Tasks) or want faster/slower reflection latency.
-
-### 3. Bootstrap your organization's data (recommended first step)
-
-Before the automatic sync has anything to sync, **populate the database once** — otherwise you'd be creating one Project at a time by hand and waiting for Employees to trickle in as issues happen to get scanned. The fastest way: ask your AI agent (Claude Code, or any agent with GitHub MCP access) to do it for you in one pass, e.g.:
-
-> "Use the GitHub MCP to read the `my-organization` organization's repositories and their contributors; create the System, one Project per repo, and one Employee per contributor."
-
-The agent reads your org's repos and each one's contributors read-only via GitHub MCP, then creates the matching records with `execution/agent_actions.py` (`data:`-style operations — see below). **One thing matters for this to work correctly**: each Employee's `name` must be set to the contributor's exact GitHub login (e.g. `Jorman-ops`), not a "nicer" display name — `github_sync`'s own auto-assignment matching (see below) looks up an issue's assignee by that exact string, and a mismatch creates a *second*, duplicate Employee instead of reusing the one you just created.
-
-### 4. Link a Project to a GitHub repo manually
-
-For a single repo, or to add one more later without re-running the bootstrap above:
-
-```bash
-docker exec v-i-s-i-o-n-web-1 python -m execution.agent_actions project --create "my-repo" --github-repo "Organization/my-repo"
-```
-
-This does two things automatically: creates the Project, and — since no `--system-id` was given — derives and links its parent System from the repo owner (`Organization`), creating that System too if it doesn't exist yet. To link an *existing* Project to a repo instead of creating a new one, or to point it at a specific System explicitly:
-
-```bash
-docker exec v-i-s-i-o-n-web-1 python -m execution.agent_actions project --update <PROJECT_ID> --github-repo "Organization/another-repo" --system-id <SYSTEM_ID>
-```
-
-No restart is needed — the next scheduled sync cycle (within `DISCOVERY_INTERVAL_SECONDS`) picks up the newly linked repo on its own.
-
-### 5. What you get, automatically
+### What you get, automatically
 
 Once a Project is linked:
-- Every open Issue becomes a Task, with its GitHub assignee mirrored to an Employee (auto-created on first sight, matched by exact GitHub login — see step 3 above) and its Issue/PR numbers shown as clickable links straight to GitHub.
-- Task status is computed from live GitHub state, not set by hand: an issue with no PR yet is `Todo`; with an open linked PR, `Testing`; once that PR merges (or the issue closes with a completed PR), `Done`; if a PR tied to the issue was closed *without* merging, or the issue closed with no completed PR at all, the Task flips to `Blocked` — regardless of whatever status a human had set, since a closed issue is treated as the most authoritative signal there is.
-- A Task manually set to `In-Progress` is left alone by GitHub sync except to advance it forward (to `Testing`/`Done`) — it's never silently reset back to `Todo`. But **only** a Task already `In-Progress` or `Testing` gets the fast 5-second recheck; a Task still sitting at `Todo` (never manually moved) is only picked up by the slower, full `DISCOVERY_INTERVAL_SECONDS` (60s default) scan — so if you want near-instant status updates on a specific Task, mark it `In-Progress` by hand first.
-- Setting a **Project's own** status to `Blocked` pauses GitHub polling for that repo entirely and hides its Tasks from the Tasks view — they'd otherwise show a status that's no longer being kept current.
-- The Tasks view sorts by status in a fixed order — `Testing` → `In-Progress` → `Todo` → the `Repeat *` statuses → `Done` → `Blocked` — so what's actively moving always surfaces above what's finished or stuck.
-- The Systems (`/systems`) and Projects (`/projects`) views, and the Tasks view's System/Project filters, all reflect this automatically — no separate "sync" button to click anywhere.
+- Every issue becomes a Task, with its GitHub assignee mirrored to a team member and its Issue/PR
+  numbers shown as links straight to GitHub.
+- Task status is computed from live GitHub state, not set by hand: an issue with no PR yet is
+  `Todo`; with an open linked PR, `Testing`; once that PR merges (or the issue closes with a
+  completed PR), `Done`; if a PR tied to the issue was closed *without* merging, or the issue
+  closed with no completed PR at all, `Blocked` — whatever a human had set, since a closed issue
+  is the most authoritative signal there is.
+- A Task manually set to `In-Progress` is only ever advanced by the sync (to `Testing`/`Done`),
+  never reset to `Todo`. Only Tasks already `In-Progress` or `Testing` get the fast 5-second
+  recheck; a `Todo` Task is refreshed by the 60-second discovery scan — mark a Task `In-Progress`
+  by hand for near-instant updates.
+- Setting a **Project's own** status to `Blocked` pauses GitHub polling for that repo and hides its
+  Tasks from the Tasks view.
+- The Tasks view sorts by status — `Testing` → `In-Progress` → `Todo` → `Repeat *` → `Done` →
+  `Blocked` — so active work surfaces first.
+- The Systems (`/systems`) and Projects (`/projects`) views and the Tasks filters reflect all of
+  this automatically.
 
 ---
 
@@ -197,13 +290,15 @@ GitHub monitoring alone counts every open issue of a repo. When the team works i
     `-.->|label|` conditions such as "contract" or "staging"). Keep it out of this repo.
 2.  **Ask your AI agent to import it**, e.g. *"data: import the plan in ~/plans/week-43.md"*. The
     agent converts it to the plan JSON following
-    [`docs/skills/import-plan/SKILL.md`](docs/skills/import-plan/SKILL.md) and runs:
+    [`docs/skills/import-plan/SKILL.md`](docs/skills/import-plan/SKILL.md) (keep that JSON out of
+    the repo too) and loads it:
     ```bash
-    docker exec v-i-s-i-o-n-web-1 python -m execution.agent_actions plan --import /tmp/plan.json
+    docker compose cp /path/to/plan.json web:/tmp/plan.json
+    docker compose exec web python -m execution.agent_actions plan --import /tmp/plan.json
     ```
-    The import is validated (no cycles, every repo in one org and already linked as a Project) and
-    becomes the System's active plan. `plan --list`, `--activate ID`, `--deactivate ID` and
-    `--delete ID` manage plans afterwards.
+    The import is validated (no cycles, every repo in one org and already linked as a Project —
+    step 6 above) and becomes the System's active plan. Manage plans afterwards with
+    `plan --list`, `--activate ID`, `--deactivate ID` and `--delete ID`.
 3.  **What changes**:
     - A Project in the active plan shows `(merged + closed) / plan issues`, with an "N/M in plan"
       mark. Other Projects keep the all-Tasks percentage.
@@ -218,8 +313,8 @@ GitHub monitoring alone counts every open issue of a repo. When the team works i
       screen; `Esc` leaves it.
 4.  **Live updates**: the `github-sync` worker re-reads the plan's issues every
     `PLAN_SYNC_INTERVAL_SECONDS` (15 by default) and the graph updates on its own: a changed node
-    simply takes its new color and symbol, with no animation. Showing a red CI needs the token's **Commit statuses: Read**
-    permission (already in the list above).
+    simply takes its new color and symbol, with no animation. A red CI needs the token's
+    **Commit statuses** (and, for GitHub Actions, **Checks**) read permission — step 1.
 
 ---
 
@@ -235,22 +330,22 @@ the password):
     ```bash
     python3 -c "import secrets; print(secrets.token_hex(32))"
     ```
-2.  **Generate the password hash** — pick your own password in place of `yourpassword`:
+2.  **Generate the password hash** with the built image (prompts without echoing; nothing needs to
+    be installed on the host):
     ```bash
-    python3 -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('yourpassword'))"
+    docker compose run --rm --no-deps --entrypoint python web -c "import getpass; from werkzeug.security import generate_password_hash as g; print(g(getpass.getpass()))"
     ```
 3.  **Paste both into `.env`**, then **double every `$` in the hash to `$$`**:
     ```bash
     SECRET_KEY=<output from step 1>
     ADMIN_PASSWORD=<output from step 2, with every $ doubled to $$>
     ```
-    This last part matters: docker-compose treats a bare `$word` in `.env` as a variable reference and
+    This last part matters: Compose treats a bare `$word` in `.env` as a variable reference and
     silently blanks it out if that variable isn't set — a Werkzeug hash always contains `$` as a field
     separator (e.g. `scrypt:32768:8:1$salt$hash`), so pasting it in unescaped corrupts the stored hash
     and every login attempt fails with no visible error.
-4.  **Restart (or recreate) the `web` container** for the new `.env` values to load —
-    `docker restart` alone does *not* re-read `.env` for an already-running container; use
-    `docker-compose up -d` to pick up the change.
+4.  **Recreate the `web` container** for the new `.env` values to load —
+    `docker restart` alone does *not* re-read `.env`; use `docker compose up -d --force-recreate web`.
 
 Full design notes and known limitations (no per-user accounts, no brute-force lockout — deliberate,
 not oversights): [`docs/architecture/02-admin-password-gate.md`](docs/architecture/02-admin-password-gate.md).
