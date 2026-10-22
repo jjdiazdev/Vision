@@ -56,6 +56,8 @@ Both end up as the same `vision-alert` **window** CustomEvent, caught by one Alp
 | "Copy name" icon (Team view) | A (direct `addAlert`) | Click |
 | Speech recognition unsupported (`voice.js`) | A (direct `addAlert`) | Unsupported browser |
 | Repeating-Task auto-reset (`execution/repetition_processor.py`) | **None** | Never toasts today — a known, undecided gap, not a bug |
+| `import_plan`/`activate_plan`/`deactivate_plan`/`delete_plan` | A | Always (activate/deactivate only when the state actually changes) |
+| `sync_plan_once` (`execution/plan_sync.py`, 15s plan cadence) | A | A plan item's `plan_status` **transition** only — never on its first sync, never for a CI/title change within the same status. More than 3 transitions in one cycle collapse into one summary toast. Changes without a transition refresh the UI with no toast |
 
 **No-op suppression**: every `update_*` function in `execution/agent_actions.py` diffs each field's
 new value against the current one and only calls `trigger_ui_refresh(toast=...)` if something
@@ -148,6 +150,48 @@ reconciles against, or deletes these files — the old SOP (`.agent/domains/docs
 since replaced) that mandated doing so is what's actually gone, not the write side. In practice
 this means `.tmp/triggers/` accumulates files that nothing ever cleans up. See
 `governance/03-agent-execution-protocol.md`.
+
+## Plan graph flow (Tasks → Graph)
+
+1. `github-sync`'s third cadence (`PLAN_SYNC_INTERVAL_SECONDS`, default 15) runs
+   `plan_sync.sync_plan_once`: one aliased `issue(number:)` query per repo of every **active**
+   plan (batches of 25), `PLAN_ITEM_FIELDS` only — it never touches the Task cadences' queries.
+   Plan items are synced even when their repo's Project is Blocked: the plan names them
+   explicitly.
+2. It writes only the PlanItem rows whose snapshot changed, relinks `task_id`s, commits once, and
+   calls `trigger_ui_refresh` once per transition (≤ 3) or once in total — so a quiet cycle emits
+   nothing.
+3. `/tasks?view=graph` renders `partials/_plan_graph.html`. Its hidden SSE hook element uses the
+   same `hx-trigger="sse:datachanged"` mechanism as every partial, but cancels the htmx request
+   (`@htmx:before-request.prevent`) and calls the Alpine component's `refresh()` instead, which
+   fetches `/api/plans/graph` with the current `plan_id` and coalesces bursts.
+4. `static/js/plan_graph.js` renders **one Mermaid SVG per repo group** (sequentially:
+   `mermaid.render` shares a scratch element), each in an absolutely positioned panel inside the
+   pan/zoom viewport. It re-measures each drawing's real bounds (Mermaid's own `viewBox` can
+   undershoot), then decorates nodes (keyboard focus, click → side panel, repo-chip dimming).
+   **Nothing in this view animates**: a refresh only replaces each panel's SVG, so a status change
+   is an instant repaint of color and glyph. The card also opts out of `main.js`'s entrance
+   animation (`data-animated`).
+5. **Movable groups.** Each panel's header is a drag handle (Pointer Events, pointer capture,
+   deltas divided by the zoom factor) and a focus target (arrow keys move 20px, Shift 80px).
+   Positions are kept per browser and per plan in `localStorage["vision_plan_layout:<plan_id>"]`
+   (read/written inside try/catch, saved on drop); groups without one are stacked under the rest
+   in plan order. "Reset layout" clears the key. Refreshes keep positions, zoom and pan.
+6. **Cross-repo edges** (`cross_edges` in the JSON) are drawn by the client on an overlay SVG in
+   viewport space, as dashed curves with their label, from each node's box measured against its
+   panel at the actually rendered scale. They are redrawn on drag, on every render, on resize,
+   once web fonts finish loading, and when "Show cross-repo conditions" toggles (remembered per
+   browser, client-side only — the server always sends them).
+
+7. **Full screen.** The button in the canvas's bottom-right corner (also `F`; `Esc` exits)
+   puts `.plan-graph-focus` — the legend/controls bar plus the stage — in full screen with the
+   Fullscreen API, so the page header, plan summary, sidebar and HUD are out of view. Where
+   element full screen is unavailable (no `fullscreenEnabled`, e.g. iPhone Safari) or refused,
+   `.is-pseudo-fullscreen` fixes the same element over everything (z-index 30001); while it is
+   open the card drops `backdrop-filter`/`overflow: hidden`, which would otherwise make it the
+   containing block of the fixed overlay. Entering or leaving refits the view (two frames later)
+   and redraws cross edges; saved panel positions are untouched. Leaving the view while in full
+   screen exits it (`destroy`). Not persisted: the view always opens in normal mode.
 
 ## Navigation flow (`navigate_to` tool)
 

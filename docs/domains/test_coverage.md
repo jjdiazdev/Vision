@@ -1,6 +1,6 @@
 # Test Coverage
 
-Six test files under `tests/`, all `unittest`-based, plus one manual diagnostic script that lives
+Ten test files under `tests/`, all `unittest`-based, plus one manual diagnostic script that lives
 outside `tests/` entirely. None of `tests/` is wired into the Docker image (`tests/` isn't copied
 at build time) — run them by `docker cp`-ing the folder in first, or on a host Python environment
 with the project's dependencies installed.
@@ -17,6 +17,30 @@ with the project's dependencies installed.
   unchanged, newest-`github_created_at`-first within a bucket, NULLs last in their bucket,
   same-second ties broken by issue number, `created_at=None` and mixed naive/aware values not
   raising, and output independence from input order. Stub objects, no DB.
+- **`tests/test_plan_status.py`** (20 tests) — `execution/plan_sync.py`'s plan status rule
+  (every `PlanStatusEnum` branch: draft, red CI, changes requested, unreadable CI, merged with the
+  issue open, `Refs`-only PRs via cross-reference, not-planned/duplicate, abandoned-only PRs,
+  open-beats-merged, other-repo PRs ignored, case-insensitive repo match) and
+  `github_sync.assert_read_only` (every project query passes; `mutation`/`subscription`
+  rejected, including after a query in the same document; the word inside strings, comments
+  and field names allowed). Synthetic payloads, DB-free.
+- **`tests/test_plan_import.py`** (13 tests) — `execution/plan_import.py`: normalization,
+  cycles (reported with their path, including through cross-repo edges), duplicate keys and
+  issues, unknown endpoints, same-repo-only edge kinds, org boundary, base-edge rules, and that
+  all errors come back together. DB-free.
+- **`tests/test_plan_graph.py`** (13 tests) — `dashboard_app/app/utils/plan_graph.py`: edge
+  notation (stacked/after-merge relaxing to `-->` once the parent is merged or closed), each repo's
+  Mermaid holding only its own nodes and same-repo edges with plan-wide ids, `cross_edges` for the
+  overlay, node glyphs and status classes, untrusted text unable to break out of a Mermaid label,
+  and `plan_progress` (merged counts as done, not-planned leaves the denominator, never-synced
+  counts as not done). DB-free.
+- **`tests/test_plan_progress.py`** (9 tests) — end to end on its own temp DB
+  (`test_plan_app.db`) with `fetch_issues_by_number` and `trigger_ui_refresh` patched:
+  `import_plan` (Task linking, activation, rejecting unlinked repos, one active plan per System),
+  `sync_plan_once` (first sync silent, one toast per transition, quiet cycle emits nothing), and
+  through Flask's test client: plan-scoped `/projects` progress, the Tasks plan filter on
+  `/tasks` and `/api/updates/tasks`, `/api/plans/graph` JSON, the graph page and the 401 gate.
+  This is also the first committed route-level coverage of the Tasks filters.
 - **`tests/test_repetitions.py`** (7 tests) — `execution/repetition_processor.py`'s daily/weekly
   (Monday-only)/monthly (1st-only) reset logic, using a real temp SQLite DB
   (`dashboard_app/instance/test_app.db`) and a mocked `today` date. Two of the seven are the
@@ -62,7 +86,7 @@ with the project's dependencies installed.
   ships inside the built Docker image, since `orchestrator/` is copied wholesale — see
   `domains/system_architecture.md`'s module map.
 
-**Known gotcha**: `test_repetitions.py` and `test_edge_cases.py` cannot run in the same `unittest`
+**Known gotcha**: `test_repetitions.py`, `test_edge_cases.py` and `test_plan_progress.py` cannot run in the same `unittest`
 process/invocation — both `setUpClass`/`tearDownClass` create and drop tables on the same global
 Flask-SQLAlchemy `db` singleton against two different temp DB files, and running both in one
 process produces a `sqlite3.OperationalError: disk I/O error` on the second `tearDownClass`. Run
@@ -86,6 +110,17 @@ each file as its own separate `python -m unittest` invocation.
   unit test on stub objects — there is still no route-level test proving the three Tasks-view
   endpoints actually apply it end-to-end with filters attached.
 - No coverage of the SSE flow (`domains/flows.md`) or the HTMX partial-swap wiring.
+- **`static/js/plan_graph.js`** has no automated test: it was verified with headless Chrome
+  against a synthetic `acme-org` plan — screenshots of all statuses, a node selected, cross edges
+  on and a narrow viewport; real mouse drags of two repo panels through CDP, a reload keeping the
+  layout and the cross edges anchored, arrow-key moves, Reset layout, and
+  `document.getAnimations()` reporting zero animations inside the graph card; full screen through
+  a real click on its button (native: `document.fullscreenElement` is `.plan-graph-focus`, `F`
+  toggles it, exiting restores the canvas height and keeps the layout) and the overlay fallback
+  with the Fullscreen API disabled (1600×857 above the HUD, pan and group drag working inside,
+  `Esc` closing it), with zero animations in full screen. The real GraphQL shape of
+  `PLAN_ITEM_FIELDS` (notably `statusCheckRollup` and `includeClosedPrs`) is covered only by
+  synthetic payloads until it runs against GitHub.
 
 ## Next-session testing priorities
 

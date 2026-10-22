@@ -1,0 +1,202 @@
+{# Plan graph view of the Tasks page (/tasks?view=graph). The data and Mermaid source come from
+   /api/plans/graph; static/js/plan_graph.js renders them and re-fetches on SSE datachanged. #}
+{# data-animated opts this card out of main.js's entrance animation: the graph view has none. #}
+<section class="glass-card plan-graph-card" data-animated="true"
+         x-data="planGraph({ apiUrl: '{{ url_for('main.api_plan_graph') }}' })"
+         :class="{ 'is-hosting-pseudo-fullscreen': pseudoFullscreen }"
+         @keydown.window="onKey($event)">
+    {# SSE hook. htmx handles the sse:datachanged trigger (the same mechanism every other
+       partial uses); the request itself is cancelled and replaced by refresh(), which knows the
+       current plan and cross-repo toggle. hx-swap/target are explicit because #slot sets
+       hx-target="this" on every ancestor of this element. #}
+    <div hx-get="{{ url_for('main.api_plan_graph') }}"
+         hx-trigger="sse:datachanged"
+         hx-target="this"
+         hx-swap="none"
+         @htmx:before-request.prevent="refresh()"
+         style="display:none;"></div>
+
+    <header class="card-header-row">
+        <div class="card-header-text">
+            <h3 class="card-title" x-text="plan ? plan.name : 'Plan graph'">Plan graph</h3>
+            <p class="card-subtitle plan-graph-meta">
+                <template x-if="plan">
+                    <span>
+                        <span x-show="plan.target_date" x-text="'Due ' + formatDate(plan.target_date)"></span>
+                        <span x-show="plan.target_date && plan.last_synced_at" aria-hidden="true"> · </span>
+                        <span x-show="plan.last_synced_at" x-text="'Synced with GitHub ' + relativeTime(plan.last_synced_at)"></span>
+                        <span x-show="!plan.last_synced_at">Waiting for the first GitHub sync</span>
+                    </span>
+                </template>
+                <template x-if="!plan">
+                    <span>Dependency graph of the active implementation plan</span>
+                </template>
+            </p>
+        </div>
+        <div class="card-header-actions">
+            <select class="plan-scope-select" aria-label="Plan"
+                    x-show="plans.length > 1" x-model.number="planId" @change="refresh(true)">
+                <template x-for="option in plans" :key="option.id">
+                    <option :value="option.id" x-text="option.name" :selected="option.id === planId"></option>
+                </template>
+            </select>
+            {% include 'partials/_tasks_view_toggle.html' %}
+        </div>
+    </header>
+
+    <template x-if="state === 'empty'">
+        <div class="plan-graph-empty">
+            <p><strong>No active plan.</strong> Progress and the Tasks list count every issue until one is imported.</p>
+            <p>Import one with <code>python -m execution.agent_actions plan --import &lt;file.json&gt;</code>. The procedure is in <code>docs/skills/import-plan/SKILL.md</code>.</p>
+        </div>
+    </template>
+
+    <template x-if="state === 'error'">
+        <p class="plan-graph-error" role="alert">Couldn't load plan status. Retrying on the next sync.</p>
+    </template>
+
+    <div class="plan-graph-body" x-show="plan" x-cloak>
+        <div class="plan-graph-summary" x-show="plan">
+            <div class="plan-graph-total">
+                <span class="plan-graph-percent" x-text="(plan ? plan.progress.percent : 0) + '%'"></span>
+                <span class="plan-graph-count"
+                      x-text="plan ? plan.progress.done + ' of ' + plan.progress.total + ' issues merged or closed' : ''"></span>
+                <div class="progress-bar-bg plan-graph-bar">
+                    <div class="progress-bar-fill" data-progress-skip :style="'width:' + (plan ? plan.progress.percent : 0) + '%'"></div>
+                </div>
+            </div>
+            <div class="plan-graph-groups" role="group" aria-label="Highlight one repository">
+                <template x-for="group in (plan ? plan.groups : [])" :key="group.key">
+                    <button type="button" class="plan-group-chip"
+                            :class="{ 'is-focused': focusGroup === group.key }"
+                            :aria-pressed="focusGroup === group.key"
+                            @click="toggleGroup(group.key)">
+                        <span x-text="group.label"></span>
+                        <span class="plan-group-count" x-text="group.done + '/' + group.total"></span>
+                    </button>
+                </template>
+            </div>
+        </div>
+
+        {# The full-screen target: exactly the legend/controls bar plus the canvas. #}
+        <div class="plan-graph-focus" x-ref="focusArea" :class="{ 'is-pseudo-fullscreen': pseudoFullscreen }">
+            <div class="plan-graph-toolbar">
+                <ul class="plan-legend" aria-label="Status legend">
+                    <li><span class="plan-chip plan-chip-sinpr" aria-hidden="true">○</span>No PR</li>
+                    <li><span class="plan-chip plan-chip-conpr" aria-hidden="true">◐</span>PR open</li>
+                    <li><span class="plan-chip plan-chip-prbloq" aria-hidden="true">⚠</span>CI failing or changes requested</li>
+                    <li><span class="plan-chip plan-chip-fusionada" aria-hidden="true">✓</span>Merged, issue open</li>
+                    <li><span class="plan-chip plan-chip-cerrada" aria-hidden="true">✔</span>Closed</li>
+                    <li class="plan-legend-edges"><span aria-hidden="true">══</span>Stacked on the parent's branch</li>
+                </ul>
+                <div class="plan-graph-controls">
+                    <label class="plan-cross-toggle" x-show="plan && plan.has_cross">
+                        <input type="checkbox" x-model="showCross" @change="setCross()">
+                        Show cross-repo conditions
+                    </label>
+                    <div class="plan-zoom" role="group" aria-label="Zoom">
+                        <button type="button" class="plan-zoom-btn" @click="zoomBy(1.2)" aria-label="Zoom in"><i class="bi bi-plus-lg" aria-hidden="true"></i></button>
+                        <button type="button" class="plan-zoom-btn" @click="zoomBy(1 / 1.2)" aria-label="Zoom out"><i class="bi bi-dash-lg" aria-hidden="true"></i></button>
+                        <button type="button" class="plan-zoom-btn" @click="fit()" aria-label="Fit graph to view" title="Fit graph to view"><i class="bi bi-aspect-ratio" aria-hidden="true"></i></button>
+                    </div>
+                    <button type="button" class="plan-reset-layout" @click="resetLayout()">Reset layout</button>
+                </div>
+            </div>
+
+            <div class="plan-graph-stage">
+                <div class="plan-graph-canvas" x-ref="canvas"
+                     :class="{ 'is-panning': panning, 'has-focus-group': focusGroup }"
+                     @wheel.prevent="onWheel($event)"
+                     @pointerdown="startPan($event)"
+                     @pointermove="movePan($event)"
+                     @pointerup="endPan($event)"
+                     @pointercancel="endPan($event)">
+                    {# Repo panels are created by plan_graph.js inside the viewport (not with x-for, so a
+                       refresh never re-creates the Mermaid SVGs Alpine doesn't know about). #}
+                    <div class="plan-graph-viewport" x-ref="viewport">
+                        <svg class="plan-cross-layer" x-ref="crossLayer" aria-hidden="true">
+                            <defs>
+                                <marker id="plan-cross-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                                        markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                                    <path d="M 0 0 L 10 5 L 0 10 z"></path>
+                                </marker>
+                            </defs>
+                        </svg>
+                    </div>
+                </div>
+
+                <aside class="plan-node-panel" x-show="selected"
+                       aria-live="polite" :aria-label="selected ? 'Details for ' + (selected.display_key || selected.key) : ''">
+                    <template x-if="selected">
+                        <div>
+                            <div class="plan-node-panel-head">
+                                <span class="plan-chip" :class="'plan-chip-' + (selected.status || 'pendiente')"
+                                      x-text="glyph(selected.status)" aria-hidden="true"></span>
+                                <div>
+                                    <p class="plan-node-key" x-text="(selected.display_key || selected.key) + ' · #' + selected.issue"></p>
+                                    <p class="plan-node-status" x-text="selected.status_name"></p>
+                                </div>
+                                <button type="button" class="btn-close-hud plan-node-close" @click="selectedKey = null" aria-label="Close details">
+                                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <p class="plan-node-title" x-text="selected.title || selected.label"></p>
+                            <dl class="plan-node-facts">
+                                <div class="plan-node-fact">
+                                    <dt>Issue</dt>
+                                    <dd><a :href="selected.issue_url" target="_blank" rel="noopener noreferrer" x-text="selected.repo + '#' + selected.issue"></a></dd>
+                                </div>
+                                <template x-if="selected.pr_number">
+                                    <div class="plan-node-fact">
+                                        <dt>Pull request</dt>
+                                        <dd>
+                                            <a :href="selected.pr_url" target="_blank" rel="noopener noreferrer" x-text="'#' + selected.pr_number"></a>
+                                            <span x-text="prSummary(selected)"></span>
+                                        </dd>
+                                    </div>
+                                </template>
+                                <template x-if="selected.status_changed_at">
+                                    <div class="plan-node-fact">
+                                        <dt>Status since</dt>
+                                        <dd x-text="formatDateTime(selected.status_changed_at)"></dd>
+                                    </div>
+                                </template>
+                                <template x-if="dependencies(selected.key, 'in').length">
+                                    <div class="plan-node-fact">
+                                        <dt>Depends on</dt>
+                                        <dd>
+                                            <template x-for="dep in dependencies(selected.key, 'in')" :key="dep.key + dep.kind">
+                                                <button type="button" class="plan-dep-link" @click="select(dep.key)" x-text="dep.text"></button>
+                                            </template>
+                                        </dd>
+                                    </div>
+                                </template>
+                                <template x-if="dependencies(selected.key, 'out').length">
+                                    <div class="plan-node-fact">
+                                        <dt>Unblocks</dt>
+                                        <dd>
+                                            <template x-for="dep in dependencies(selected.key, 'out')" :key="dep.key + dep.kind">
+                                                <button type="button" class="plan-dep-link" @click="select(dep.key)" x-text="dep.text"></button>
+                                            </template>
+                                        </dd>
+                                    </div>
+                                </template>
+                            </dl>
+                            <a class="plan-node-task" x-show="selected.task_url" :href="selected.task_url"
+                               x-text="'Open task in the list'"></a>
+                            <p class="plan-node-hint" x-show="!selected.task_id">Not synced as a Task yet: its repo's Project may be Blocked or still waiting for discovery.</p>
+                        </div>
+                    </template>
+                </aside>
+                <button type="button" class="plan-fullscreen-btn" @click="toggleFullscreen()"
+                        :aria-pressed="isFullscreen"
+                        :aria-label="isFullscreen ? 'Exit full screen' : 'Show graph full screen'"
+                        :title="isFullscreen ? 'Exit full screen (F or Esc)' : 'Full screen (F)'">
+                    <i class="bi" :class="isFullscreen ? 'bi-fullscreen-exit' : 'bi-fullscreen'" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <p class="plan-graph-narrow">The plan graph needs a wider screen. <a href="{{ url_for('main.tasks_list') }}">Switch to the list</a>.</p>
+</section>

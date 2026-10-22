@@ -9,8 +9,32 @@
          style="display:none;">
     </div>
 
-    <h3 class="card-title">All Tasks</h3>
-    <p class="card-subtitle">Global issue tracking and status management</p>
+    <div class="card-header-row">
+        <div class="card-header-text">
+            <h3 class="card-title">{% if plan_active and f_plan == 'active' %}Plan tasks{% else %}All Tasks{% endif %}</h3>
+            <p class="card-subtitle">
+                {% if plan_active and f_plan == 'active' %}
+                Only issues in {{ active_plans | map(attribute='name') | join(', ') }}
+                {% else %}
+                Global issue tracking and status management
+                {% endif %}
+            </p>
+        </div>
+        <div class="card-header-actions">
+            {% if plan_active %}
+            <select name="f_plan" class="task-filter-input plan-scope-select" aria-label="Which tasks to show"
+                    hx-get="{{ url_for('main.api_tasks_updates') }}"
+                    hx-trigger="change"
+                    hx-target=".tasks-table-container"
+                    hx-swap="outerHTML"
+                    hx-include=".task-filter-input">
+                <option value="active" {% if f_plan == 'active' %}selected{% endif %}>Plan only</option>
+                <option value="all" {% if f_plan == 'all' %}selected{% endif %}>All tasks</option>
+            </select>
+            {% endif %}
+            {% include 'partials/_tasks_view_toggle.html' %}
+        </div>
+    </div>
 
     <table class="task-table global-tasks">
         <thead>

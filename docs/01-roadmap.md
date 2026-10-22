@@ -136,6 +136,21 @@ Each phase is structured to be independent enough for milestone assignment but i
     - Design a fail-safe mechanism that automatically falls back to the local model when internet connectivity is lost, ensuring system resilience.
     - Optimize cost-efficiency by using local models for simple routine tasks and Cloud APIs only for complex reasoning or high-latency scenarios.
 
+## 📐 Phase 8: Plan-Driven Delivery Tracking
+
+**Goal:** Measure progress against the short-cycle implementation plan the team is executing, not
+against every open issue of a repo.
+
+- [x] **8.1 Plan-scoped progress & live dependency graph** (2026-10-22, ADR 0003):
+    - Import a plan (issues across an org's repos + their dependency DAG) as validated JSON
+      (`agent_actions plan --import`, `docs/skills/import-plan/SKILL.md`).
+    - Projects in the active plan show `(merged + closed) / plan issues`; the Tasks list defaults
+      to the plan's issues.
+    - Tasks → Graph: horizontal Mermaid graph per repo, live status colors and glyphs (no PR / PR
+      open / CI failing or changes requested / merged / closed), stacked edges relaxing as parents
+      merge, updated by a third 15s sync cadence over SSE.
+    - Read-only GitHub guardrail now enforced in code (`graphql_query`).
+
 ***
 
 ### 📝 Next Steps for the Team:

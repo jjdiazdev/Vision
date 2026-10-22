@@ -5,7 +5,13 @@
 {% block page_title %}Tasks{% endblock %}
 
 {% block content %}
+{% if view == 'graph' %}
+<div id="plan-graph-container">
+    {% include 'partials/_plan_graph.html' %}
+</div>
+{% else %}
 <div id="tasks-container">
     {% include 'partials/_tasks_table.html' %}
 </div>
+{% endif %}
 {% endblock %}

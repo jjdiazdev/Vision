@@ -112,3 +112,27 @@ pattern, so the codebase reuses instead of reinventing.
   `domains/business_logic.md`'s "Review-state rule"). When deriving anything from a `reviews`
   connection, always dedupe to each author's *latest* submission first — GitHub never mutates an
   earlier review's `state` when the same author submits a later one.
+
+## Implementation plans (ADR 0003)
+
+- **Task status and plan status are two vocabularies on purpose.** The same issue reads `Done` as a
+  Task once its PR merged (`github_sync._compute_status`) and `fusionada` as a plan node until the
+  issue itself closes (`plan_sync.compute_plan_snapshot`). Plan progress counts both `fusionada` and
+  `cerrada` as done (PM decision, 2026-10-22), so a Project's plan percentage and its Tasks'
+  statuses agree on "done" even though the graph keeps the two states apart. Do not "fix" one to
+  match the other.
+- **A cross-reference counts as a linked PR.** `Refs #N` only produces a `CROSS_REFERENCED_EVENT`,
+  so the plan sync has to read those; a PR that merely mentions `#N` in passing is treated the same.
+  Only same-repo PRs count, which removes most false positives.
+- **One Mermaid SVG per repo, not one SVG with subgraphs.** In a Mermaid flowchart a subgraph's
+  nodes are siblings of its cluster box, not children, and edges are fixed paths — a subgraph
+  cannot be moved after rendering without rewriting Mermaid's DOM. Rendering each repo on its own
+  (`build_group_mermaid`) and drawing cross-repo edges on a client overlay is what makes groups
+  movable. It also removes the old subgraph quirks (bottom-up ordering, `direction LR`, clipped
+  titles). `classDef` still splits on commas — use 8-digit hex, not `rgba()`.
+- **Measure SVG positions against the rendered scale, not the zoom state.** The overlay once drew
+  cross edges with `view.k` while the browser had painted a different transform (first load), so
+  `nodeBox` divides by `panelRect.width / panel.offsetWidth` instead.
+- **Request-scoped caches must key on the request, not just `g`.** An app context that outlives
+  one request (the test suites push one for the whole class) is reused by Flask for every request,
+  so a plain `g` memo served the first request's answer forever (`utils/plan_context.py::_cache`).

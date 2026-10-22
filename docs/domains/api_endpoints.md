@@ -16,7 +16,7 @@ route.
 | GET | `/systems/` | `systems_list_slash` | redirects to `/systems` |
 | GET | `/system/<int:system_id>` | `system_detail` | `system_detail.html` — one System's Projects |
 | POST | `/login` | `login` | verifies `ADMIN_PASSWORD` (see `architecture/02-admin-password-gate.md`), sets `session['authenticated']`, redirects to `next` or `/` |
-| GET | `/tasks` | `tasks_list` | `tasks.html` — global Tasks table. Query-string filters `f_system_id`/`f_project_id`/`f_employee_id`/`f_q` are honored on this initial load (e.g. linked from a Project/Team-member name, or a Notification History entry — see `flows.md`); `f_status` is still HTMX-only — it only takes effect once the filter row fires a request against `/api/updates/tasks`, not on a fresh page load |
+| GET | `/tasks` | `tasks_list` | `tasks.html` — global Tasks table, or the plan graph with `?view=graph` (`partials/_plan_graph.html`; data from `/api/plans/graph`). Query-string filters `f_system_id`/`f_project_id`/`f_employee_id`/`f_q`/`f_plan` are honored on this initial load (e.g. linked from a Project/Team-member name, or a Notification History entry — see `flows.md`); `f_status` is still HTMX-only — it only takes effect once the filter row fires a request against `/api/updates/tasks`, not on a fresh page load. With an active plan the table defaults to that plan's issues (`f_plan=active`); `f_plan=all` shows every Task. All three Tasks responses share `filter_tasks()` |
 
 ## Partial refresh endpoints (`/api/updates/*`, HTMX/SSE-driven)
 
@@ -27,7 +27,8 @@ route.
 | GET | `/api/updates/projects` | `api_projects_updates` | Projects table (both `/` and `/projects` share it) |
 | GET | `/api/updates/systems` | `api_systems_updates` | Systems table |
 | GET | `/api/updates/system/<int:system_id>` | `api_system_detail_updates` | one System's Projects sub-table |
-| GET | `/api/updates/tasks` | `api_tasks_updates` | Tasks table body, respects all active filters |
+| GET | `/api/updates/tasks` | `api_tasks_updates` | Tasks table body, respects all active filters (including `f_plan`) |
+| GET | `/api/plans/graph` | `api_plan_graph` | **JSON**, not HTML: the Tasks graph view. `?plan_id=` (default: the first active plan). Returns `{plans, plan: {id, name, target_date, progress, groups: [{key, label, done, total, percent, mermaid}], has_cross, last_synced_at} \| null, nodes, edges, cross_edges}` — one Mermaid source per repo group (same-repo edges only); edges between groups come separately in `cross_edges` for the client overlay; re-fetched by `static/js/plan_graph.js` on `sse:datachanged`. Behind the admin gate like every `/api/*` route (401 when locked) |
 | GET | `/api/updates/notifications` | `api_notifications_updates` | Notification History panel (dashboard-only) |
 
 ## Mutations (state-changing, `POST`)

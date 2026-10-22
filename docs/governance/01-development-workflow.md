@@ -45,7 +45,9 @@ que el chat soporte Z".
   ```bash
   docker exec vision-web-1 python -m execution.agent_actions <command> ...
   ```
-- Available subcommands: `system`, `project`, `task`, `employee`, `search`, `navigate`.
+- Available subcommands: `system`, `project`, `task`, `employee`, `plan`, `search`, `navigate`.
+  `plan --import <file.json>` loads an implementation plan; converting the plan's Markdown to that
+  JSON is the agent's job, following `docs/skills/import-plan/SKILL.md` (also a data operation).
 - For anything not covered by the `argparse` CLI (e.g. calling `chat_response` or another loose
   module function), use an inline `python -c` inside the container importing the function
   directly.

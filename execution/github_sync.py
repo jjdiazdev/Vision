@@ -34,6 +34,7 @@ no intermediate grouping.
 import html
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 import requests
@@ -113,10 +114,53 @@ def _github_headers():
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def get_rate_limit():
-    resp = requests.post(GITHUB_GRAPHQL_URL, json={"query": RATE_LIMIT_QUERY}, headers=_github_headers(), timeout=10)
+class GitHubWriteAttempt(RuntimeError):
+    """Raised before any request leaves the process if a GraphQL document is not a pure query.
+    See docs/architecture/01-github-readonly-guardrail.md -- this is that rule, enforced."""
+
+
+_GRAPHQL_STRING = re.compile(r'"""(?:\\.|[^\\])*?"""|"(?:\\.|[^"\\\n])*"')
+_GRAPHQL_COMMENT = re.compile(r"#[^\n]*")
+_GRAPHQL_NAME = re.compile(r"[_A-Za-z][_0-9A-Za-z]*")
+
+
+def assert_read_only(document):
+    """Reject any GraphQL document containing a `mutation` or `subscription` operation.
+
+    Operation types only appear at brace depth 0, so strings and comments are stripped first
+    (a title containing the word "mutation" must not trip it) and only depth-0 names are
+    inspected. Raises before the caller can reach the network."""
+    text = _GRAPHQL_COMMENT.sub(" ", _GRAPHQL_STRING.sub('""', document))
+    depth = 0
+    top_level = []
+    for idx, char in enumerate(text):
+        if char in "{(":
+            depth += 1
+        elif char in "})":
+            depth -= 1
+        elif depth == 0 and (idx == 0 or not (text[idx - 1].isalnum() or text[idx - 1] == "_")):
+            match = _GRAPHQL_NAME.match(text, idx)
+            if match:
+                top_level.append(match.group(0))
+    for name in top_level:
+        if name in ("mutation", "subscription"):
+            raise GitHubWriteAttempt(f"Refusing to send a GraphQL {name}: GitHub access is read-only")
+
+
+def graphql_query(query, variables=None, timeout=15):
+    """The single exit point for every GitHub request this project makes. Read-only by
+    construction: assert_read_only runs before the network call."""
+    assert_read_only(query)
+    body = {"query": query}
+    if variables is not None:
+        body["variables"] = variables
+    resp = requests.post(GITHUB_GRAPHQL_URL, json=body, headers=_github_headers(), timeout=timeout)
     resp.raise_for_status()
-    payload = resp.json()
+    return resp.json()
+
+
+def get_rate_limit():
+    payload = graphql_query(RATE_LIMIT_QUERY, timeout=10)
     if "errors" in payload:
         raise RuntimeError(f"GitHub GraphQL error checking rate limit: {payload['errors']}")
     return payload["data"]["rateLimit"]
@@ -128,14 +172,7 @@ def fetch_repo_issues(owner, repo, since=None):
     issues = []
     after = None
     while True:
-        resp = requests.post(
-            GITHUB_GRAPHQL_URL,
-            json={"query": ISSUES_QUERY, "variables": {"owner": owner, "repo": repo, "after": after}},
-            headers=_github_headers(),
-            timeout=15,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = graphql_query(ISSUES_QUERY, {"owner": owner, "repo": repo, "after": after})
         if "errors" in payload:
             raise RuntimeError(f"GitHub GraphQL error for {owner}/{repo}: {payload['errors']}")
         repo_data = payload["data"]["repository"]
@@ -167,9 +204,7 @@ def fetch_issues_by_number(owner, repo, numbers, fields=ISSUE_FIELDS):
     aliases = "\n".join(f"i{idx}: issue(number: {n}) {{ {fields} }}" for idx, n in enumerate(numbers))
     query = f'query {{ repository(owner: "{owner}", name: "{repo}") {{ {aliases} }} }}'
 
-    resp = requests.post(GITHUB_GRAPHQL_URL, json={"query": query}, headers=_github_headers(), timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = graphql_query(query)
     if "errors" in payload:
         raise RuntimeError(f"GitHub GraphQL error for {owner}/{repo}: {payload['errors']}")
     repo_data = payload["data"]["repository"]

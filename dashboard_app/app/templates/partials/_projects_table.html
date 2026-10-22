@@ -23,7 +23,7 @@
             </thead>
             <tbody>
                 {% for project in projects %}
-                <tr {% if project.is_complete %}class="row-completed"{% endif %}>
+                <tr {% if project_progress(project).complete %}class="row-completed"{% endif %}>
                     <td class="text-secondary" style="font-family: monospace;">{{ project.id }}</td>
                     <td>
                         <a href="{{ url_for('main.tasks_list', f_project_id=project.id) }}" class="project-name">
@@ -51,10 +51,11 @@
                         </select>
                     </td>
                     <td>
-                        <div class="progress-container">
-                            <div class="progress-label">{{ project.progress }}%</div>
+                        {% set progress = project_progress(project) %}
+                        <div class="progress-container"{% if progress.scoped %} title="Active plan: {{ progress.done }} of {{ progress.total }} issues merged or closed"{% endif %}>
+                            <div class="progress-label">{{ progress.percent }}%{% if progress.scoped %} <span class="progress-plan-mark">{{ progress.done }}/{{ progress.total }} in plan</span>{% endif %}</div>
                             <div class="progress-bar-bg">
-                                <div class="progress-bar-fill" style="width: {{ project.progress }}%;"></div>
+                                <div class="progress-bar-fill" data-progress-key="project-{{ project.id }}" style="width: {{ progress.percent }}%;"></div>
                             </div>
                         </div>
                     </td>

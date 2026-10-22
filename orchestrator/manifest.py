@@ -303,6 +303,48 @@ TOOL_MANIFEST = [
         }
     },
     {
+        "name": "list_plans",
+        "description": "Lists the imported implementation plans (the weekly subset of GitHub issues that progress counts), showing which one is active per system.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "system_id": {
+                    "type": "integer",
+                    "description": "Optional system ID to list only that system's plans."
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "activate_plan",
+        "description": "Makes an imported plan the active one for its system, so progress and the Tasks view are scoped to its issues. REQUIRES numeric plan_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "integer",
+                    "description": "The unique ID of the plan to activate."
+                }
+            },
+            "required": ["plan_id"]
+        }
+    },
+    {
+        "name": "deactivate_plan",
+        "description": "Deactivates a plan, so progress and the Tasks view go back to counting all tasks. REQUIRES numeric plan_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "integer",
+                    "description": "The unique ID of the plan to deactivate."
+                }
+            },
+            "required": ["plan_id"]
+        }
+    },
+    {
         "name": "chat_response",
         "description": "Used for general conversation or greetings when no other tool is appropriate.",
         "parameters": {

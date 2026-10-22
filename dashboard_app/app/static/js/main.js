@@ -35,23 +35,31 @@ function initSidebarInteractivity() {
 }
 
 // 3. Dynamic Progress Bar Animation
+// Bars with data-progress-key grow from their previous width when an SSE refresh swaps in a
+// new copy of the table (htmx:afterSettle below), instead of jumping; first paint grows from 0.
+const lastProgressWidths = {};
+
 function initProgressBars() {
-    const progressFills = document.querySelectorAll('.progress-bar-fill');
+    const progressFills = document.querySelectorAll('.progress-bar-fill:not([data-progress-skip])');
     progressFills.forEach(fill => {
         // Skip if already animated and width matches
         const targetWidth = fill.style.width;
         if (fill.dataset.lastWidth === targetWidth) return;
-        
-        // If it's a new fill or width changed
-        const currentWidth = fill.style.width;
-        fill.style.width = '0';
+
+        const key = fill.dataset.progressKey;
+        const fromWidth = key && lastProgressWidths[key] !== undefined ? lastProgressWidths[key] : '0';
+        fill.style.transition = 'none';
+        fill.style.width = fromWidth;
         setTimeout(() => {
             fill.style.transition = 'width 1.5s cubic-bezier(0.34, 1.56, 0.64, 1)';
             fill.style.width = targetWidth;
             fill.dataset.lastWidth = targetWidth;
+            if (key) lastProgressWidths[key] = targetWidth;
         }, 100);
     });
 }
+
+document.addEventListener('htmx:afterSettle', () => initProgressBars());
 
 // 5. Button Hover Glow Effect
 function initButtonGlow() {

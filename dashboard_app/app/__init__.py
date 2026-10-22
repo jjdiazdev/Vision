@@ -31,6 +31,9 @@ def create_app(config_class=Config):
     from dashboard_app.app.utils.htmx_utils import register_htmx_context_processor
     register_htmx_context_processor(app)
 
+    from dashboard_app.app.utils.plan_context import register_plan_context_processor
+    register_plan_context_processor(app)
+
     from dashboard_app.app.utils.jinja_filters import register_template_filters
     register_template_filters(app)
 

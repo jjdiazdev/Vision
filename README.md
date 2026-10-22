@@ -59,6 +59,7 @@ Full schema and business rules: [`docs/domains/business_logic.md`](docs/domains/
 - **Automatic GitHub Task Sync:** Once a Project is linked to a GitHub repo, its Issues/PRs appear as Tasks automatically, with status (`Todo`/`Testing`/`Done`/`Blocked`) computed from real issue/PR state — no manual data entry, and never a write back to GitHub.
 - **Notification History:** The Dashboard keeps a persisted history of every toast — not just the ephemeral 5-second popup. Each entry shows the message, the linked team member (when there is one), and the timestamp; click a Task-related entry to jump straight to the Tasks view pre-filtered to that task's project and assignee at once. Dismiss an entry once you've dealt with it — it slides out and the rest reflow to fill the gap.
 - **Toast Sound Notifications:** Every toast now plays a short sound, so an automatic status change (e.g. from the GitHub sync worker) doesn't go unnoticed just because you weren't looking at the screen — see [Sound Notifications](#-sound-notifications) below to set it up.
+- **Weekly Implementation Plans:** Import the plan the team is executing this cycle (its issues across your org's repos plus their dependency graph). Progress then counts only that plan's issues, the Tasks list shows only them, and **Tasks → Graph** draws the plan as a live, horizontal dependency graph whose nodes change color and symbol as PRs open, fail CI, get changes requested, merge and close — see [Weekly Implementation Plans](#-weekly-implementation-plans) below.
 - **Admin Password Gate:** A single shared password blocks the whole dashboard until entered, resetting whenever the browser is fully closed and reopened — see [Admin Password Gate](#-admin-password-gate) below to configure one.
 
 ---
@@ -183,6 +184,42 @@ Once a Project is linked:
 - Setting a **Project's own** status to `Blocked` pauses GitHub polling for that repo entirely and hides its Tasks from the Tasks view — they'd otherwise show a status that's no longer being kept current.
 - The Tasks view sorts by status in a fixed order — `Testing` → `In-Progress` → `Todo` → the `Repeat *` statuses → `Done` → `Blocked` — so what's actively moving always surfaces above what's finished or stuck.
 - The Systems (`/systems`) and Projects (`/projects`) views, and the Tasks view's System/Project filters, all reflect this automatically — no separate "sync" button to click anywhere.
+
+---
+
+## 📐 Weekly Implementation Plans
+
+GitHub monitoring alone counts every open issue of a repo. When the team works in short cycles
+(plan, implement, test, next plan), only the issues in **this** plan should move the percentage.
+
+1.  **Write the plan as usual** — a Markdown document listing the issues per repo and ending in a
+    Mermaid `graph LR` of their dependencies (`-->` from the base branch, `==>` stacked PRs,
+    `-.->|label|` conditions such as "contract" or "staging"). Keep it out of this repo.
+2.  **Ask your AI agent to import it**, e.g. *"data: import the plan in ~/plans/week-43.md"*. The
+    agent converts it to the plan JSON following
+    [`docs/skills/import-plan/SKILL.md`](docs/skills/import-plan/SKILL.md) and runs:
+    ```bash
+    docker exec v-i-s-i-o-n-web-1 python -m execution.agent_actions plan --import /tmp/plan.json
+    ```
+    The import is validated (no cycles, every repo in one org and already linked as a Project) and
+    becomes the System's active plan. `plan --list`, `--activate ID`, `--deactivate ID` and
+    `--delete ID` manage plans afterwards.
+3.  **What changes**:
+    - A Project in the active plan shows `(merged + closed) / plan issues`, with an "N/M in plan"
+      mark. Other Projects keep the all-Tasks percentage.
+    - The Tasks list shows only the plan's issues; switch **Plan only → All tasks** to see the rest.
+    - **Tasks → Graph** (top right) draws the plan per repo, left to right. Node color and symbol
+      follow the plan's status rule: ○ no PR, ◐ PR open, ⚠ CI failing or changes requested,
+      ✓ merged with the issue still open, ✔ closed. A stacked edge (`══`) relaxes to a plain one
+      once its parent merges. Click a node for its PR, CI, review and dependencies. Drag a
+      repo's graph by its header (or focus it and use the arrow keys) to arrange the canvas; the
+      layout is remembered in your browser, and **Reset layout** restores it. The button in the canvas's
+      bottom-right corner (or the `F` key) shows just the legend, controls and canvas full
+      screen; `Esc` leaves it.
+4.  **Live updates**: the `github-sync` worker re-reads the plan's issues every
+    `PLAN_SYNC_INTERVAL_SECONDS` (15 by default) and the graph updates on its own: a changed node
+    simply takes its new color and symbol, with no animation. Showing a red CI needs the token's **Commit statuses: Read**
+    permission (already in the list above).
 
 ---
 

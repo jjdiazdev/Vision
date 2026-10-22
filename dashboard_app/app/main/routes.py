@@ -1,10 +1,13 @@
 from flask import render_template, request, redirect, url_for, Response, stream_with_context, make_response, session, current_app, abort
 from werkzeug.security import check_password_hash
 from dashboard_app.app.main import bp
-from dashboard_app.app.models import Task, Project, StatusEnum, Employee, System, ChatMessage, Notification
+from dashboard_app.app.models import Task, Project, StatusEnum, Employee, System, ChatMessage, Notification, Plan
 from dashboard_app.app.extensions import db
 from dashboard_app.app.utils.trigger import trigger_task_update, trigger_project_update
 from dashboard_app.app.utils.sse import announcer
+from dashboard_app.app.utils.plan_context import active_plans, plan_task_ids
+from dashboard_app.app.utils.plan_graph import build_group_mermaid, cross_edges, node_ids, plan_progress, STATUS_NAMES
+from sqlalchemy import false
 from orchestrator.brain import Orchestrator
 from datetime import datetime, timezone
 import json
@@ -187,45 +190,9 @@ def update_task_status(task_id):
     if request.headers.get('HX-Request') == 'true':
         all_employees = Employee.query.all()
 
-        # Extract filters from request (POST values from hx-include)
-        q = request.values.get('f_q')
-        status = request.values.get('f_status')
-        system_id = request.values.get('f_system_id')
-        employee_id = request.values.get('f_employee_id')
-        project_id = request.values.get('f_project_id')
-
-        query = Task.query.join(Project).filter(Project.status != StatusEnum.BLOCKED)
-        if q:
-            query = query.filter(Task.name.ilike(f'%{q}%'))
-        if status and status != 'all':
-            try:
-                query = query.filter(Task.status == StatusEnum(status))
-            except ValueError:
-                pass
-        if project_id and project_id != 'all':
-            query = query.filter(Task.project_id == int(project_id))
-        if employee_id and employee_id != 'all':
-            if employee_id == 'none':
-                query = query.filter(Task.employee_id == None)
-            else:
-                query = query.filter(Task.employee_id == int(employee_id))
-        if system_id and system_id != 'all':
-            query = query.filter(Project.system_id == int(system_id))
-
-        tasks = sort_tasks(query.all())
-        all_systems = System.query.all()
-        all_projects = Project.query.all()
+        tasks, filters = filter_tasks(request.values)
         flask_response = make_response(render_template('partials/_tasks_table.html',
-                                                       tasks=tasks,
-                                                       all_employees=all_employees,
-                                                       all_systems=all_systems,
-                                                       all_projects=all_projects,
-                                                       statuses=StatusEnum,
-                                                       f_q=q,
-                                                       f_status=status,
-                                                       f_system_id=system_id,
-                                                       f_employee_id=employee_id,
-                                                       f_project_id=project_id))
+                                                       **tasks_template_context(tasks, filters)))
 
         # Success alert
         trigger_data = {"vision-alert": {"message": f"Task '{task.name}' updated", "type": "success"}}
@@ -439,92 +406,139 @@ def api_systems_updates():
     systems = System.query.all()
     return render_template('partials/_systems_table.html', systems=systems)
 
+TASK_FILTER_KEYS = ('f_q', 'f_status', 'f_system_id', 'f_employee_id', 'f_project_id', 'f_plan')
+
+
+def filter_tasks(values, use_status=True):
+    """Single filter authority for every Tasks-table response (full page, SSE refresh, inline
+    edit), so the three can never drift apart again. Invalid ids are ignored, not 500s.
+
+    f_plan: with an active plan the table defaults to that plan's issues ('active'); 'all'
+    shows every Task. Without an active plan the filter does nothing."""
+    filters = {key: values.get(key) for key in TASK_FILTER_KEYS}
+    if not use_status:
+        filters['f_status'] = None
+    query = Task.query.join(Project).filter(Project.status != StatusEnum.BLOCKED)
+
+    def as_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    if filters['f_q']:
+        query = query.filter(Task.name.ilike(f"%{filters['f_q']}%"))
+    if filters['f_status'] and filters['f_status'] != 'all':
+        try:
+            query = query.filter(Task.status == StatusEnum(filters['f_status']))
+        except ValueError:
+            pass
+    if filters['f_project_id'] and filters['f_project_id'] != 'all' and as_int(filters['f_project_id']) is not None:
+        query = query.filter(Task.project_id == as_int(filters['f_project_id']))
+    if filters['f_employee_id'] and filters['f_employee_id'] != 'all':
+        if filters['f_employee_id'] == 'none':
+            query = query.filter(Task.employee_id == None)
+        elif as_int(filters['f_employee_id']) is not None:
+            query = query.filter(Task.employee_id == as_int(filters['f_employee_id']))
+    if filters['f_system_id'] and filters['f_system_id'] != 'all' and as_int(filters['f_system_id']) is not None:
+        query = query.filter(Project.system_id == as_int(filters['f_system_id']))
+
+    plan_ids = plan_task_ids()
+    filters['f_plan'] = 'all' if filters['f_plan'] == 'all' else 'active'
+    filters['plan_active'] = plan_ids is not None
+    if plan_ids is not None and filters['f_plan'] == 'active':
+        query = query.filter(Task.id.in_(plan_ids)) if plan_ids else query.filter(false())
+
+    return sort_tasks(query.all()), filters
+
+
+def tasks_template_context(tasks, filters):
+    return dict(tasks=tasks,
+                all_employees=Employee.query.all(),
+                all_systems=System.query.all(),
+                all_projects=Project.query.all(),
+                statuses=StatusEnum,
+                active_plans=active_plans(),
+                **filters)
+
+
 @bp.route('/tasks')
 def tasks_list():
-    # Retrieve optional system/project/assignee/search filters from query parameters
-    system_id = request.args.get('f_system_id')
-    project_id = request.args.get('f_project_id')
-    employee_id = request.args.get('f_employee_id')
-    q = request.args.get('f_q')
-    query = Task.query.join(Project).filter(Project.status != StatusEnum.BLOCKED)
-    if project_id and project_id != 'all':
-        try:
-            query = query.filter(Task.project_id == int(project_id))
-        except ValueError:
-            pass  # ignore invalid values
-    if system_id and system_id != 'all':
-        try:
-            query = query.filter(Project.system_id == int(system_id))
-        except ValueError:
-            pass  # ignore invalid values
-    if employee_id and employee_id != 'all':
-        try:
-            if employee_id == 'none':
-                query = query.filter(Task.employee_id == None)
-            else:
-                query = query.filter(Task.employee_id == int(employee_id))
-        except ValueError:
-            pass  # ignore invalid values
-    if q:
-        query = query.filter(Task.name.ilike(f'%{q}%'))
-    tasks = sort_tasks(query.all())
-    all_employees = Employee.query.all()
-    all_systems = System.query.all()
-    all_projects = Project.query.all()
-    return render_template('tasks.html',
-                           tasks=tasks,
-                           all_employees=all_employees,
-                           all_systems=all_systems,
-                           all_projects=all_projects,
-                           statuses=StatusEnum,
-                           f_system_id=system_id,
-                           f_project_id=project_id,
-                           f_employee_id=employee_id,
-                           f_q=q)
+    view = 'graph' if request.args.get('view') == 'graph' else 'list'
+    # f_status is deliberately ignored on a full page load (the select starts at "all").
+    tasks, filters = filter_tasks(request.args, use_status=False)
+    return render_template('tasks.html', view=view, **tasks_template_context(tasks, filters))
 
 @bp.route('/api/updates/tasks')
 def api_tasks_updates():
-    q = request.values.get('f_q')
-    status = request.values.get('f_status')
-    system_id = request.values.get('f_system_id')
-    employee_id = request.values.get('f_employee_id')
-    project_id = request.values.get('f_project_id')
+    tasks, filters = filter_tasks(request.values)
+    return render_template('partials/_tasks_table.html', **tasks_template_context(tasks, filters))
 
-    query = Task.query.join(Project).filter(Project.status != StatusEnum.BLOCKED)
 
-    if q:
-        query = query.filter(Task.name.ilike(f'%{q}%'))
-    if status and status != 'all':
-        try:
-            query = query.filter(Task.status == StatusEnum(status))
-        except ValueError:
-            # Ignore invalid status
-            pass
-    if project_id and project_id != 'all':
-        query = query.filter(Task.project_id == int(project_id))
-    if employee_id and employee_id != 'all':
-        if employee_id == 'none':
-            query = query.filter(Task.employee_id == None)
-        else:
-            query = query.filter(Task.employee_id == int(employee_id))
-    if system_id and system_id != 'all':
-        query = query.filter(Project.system_id == int(system_id))
+def _plan_node_payload(item):
+    task = item.task
+    return {
+        "key": item.key, "kind": item.node_kind, "group": item.group_key,
+        "issue": item.issue_number, "repo": item.repo,
+        "display_key": item.display_key, "label": item.label, "title": item.github_title,
+        "status": item.plan_status.value if item.plan_status else None,
+        "status_name": STATUS_NAMES.get(item.plan_status.value if item.plan_status else "pendiente"),
+        "status_changed_at": item.status_changed_at.isoformat() + "Z" if item.status_changed_at else None,
+        "last_synced_at": item.last_synced_at.isoformat() + "Z" if item.last_synced_at else None,
+        "pr_number": item.pr_number, "pr_state": item.pr_state, "pr_is_draft": item.pr_is_draft,
+        "ci": item.pr_ci_state, "review": item.pr_review_decision,
+        "issue_url": item.issue_url, "pr_url": item.pr_url,
+        "task_id": task.id if task else None,
+        "task_name": task.name if task else None,
+        "task_url": url_for('main.tasks_list', f_project_id=task.project_id, f_q=task.name) if task else None,
+    }
 
-    tasks = sort_tasks(query.all())
-    all_employees = Employee.query.all()
-    all_systems = System.query.all()
-    all_projects = Project.query.all()
-    return render_template('partials/_tasks_table.html',
-                           tasks=tasks,
-                           all_employees=all_employees,
-                           all_systems=all_systems,
-                           all_projects=all_projects,
-                           statuses=StatusEnum,
-                           f_q=q,
-                           f_status=status,
-                           f_system_id=system_id,
-                           f_employee_id=employee_id,
-                           f_project_id=project_id)
+
+@bp.route('/api/plans/graph')
+def api_plan_graph():
+    """Everything the Tasks graph view renders, in one JSON response: the plan, its progress
+    and Mermaid source per repo group, the edges between groups (drawn by the client overlay),
+    and per-node detail for the side panel. Re-fetched by the view on every SSE datachanged."""
+    plans = active_plans()
+    plan = None
+    requested = request.args.get('plan_id', type=int)
+    if requested:
+        plan = Plan.query.get(requested)
+    if plan is None and plans:
+        plan = plans[0]
+    payload = {"plans": [{"id": p.id, "name": p.name} for p in plans], "plan": None}
+    if plan is None:
+        return payload
+
+    nodes = [_plan_node_payload(item) for item in plan.items]
+    edges = [{"from": e.from_key, "to": e.to_key, "kind": e.kind, "label": e.label} for e in plan.edges]
+    groups = []
+    for item in plan.items:
+        if item.group_key not in [g["key"] for g in groups]:
+            groups.append({"key": item.group_key, "label": item.group_label or item.group_key})
+    issue_nodes = [n for n in nodes if n["kind"] == "issue"]
+    ids = node_ids(nodes)
+    for group in groups:
+        group.update(plan_progress(n["status"] for n in issue_nodes if n["group"] == group["key"]))
+        group["mermaid"] = build_group_mermaid(group["key"], nodes, edges, ids)
+    for node in nodes:
+        node["mid"] = ids[node["key"]]
+    between_groups = cross_edges(nodes, edges)
+    synced = [n["last_synced_at"] for n in issue_nodes if n["last_synced_at"]]
+
+    payload["plan"] = {
+        "id": plan.id, "name": plan.name, "is_active": plan.is_active,
+        "target_date": plan.target_date.isoformat() if plan.target_date else None,
+        "source": plan.source_name,
+        "progress": plan_progress(n["status"] for n in issue_nodes),
+        "groups": groups,
+        "has_cross": bool(between_groups),
+        "last_synced_at": max(synced) if synced else None,
+    }
+    payload["nodes"] = nodes
+    payload["edges"] = edges
+    payload["cross_edges"] = between_groups
+    return payload
 
 @bp.route('/system/<int:system_id>')
 def system_detail(system_id):

@@ -15,7 +15,11 @@ dashboard_app/
 │   ├── utils/timezone_utils.py  # DISPLAY_TIMEZONE conversion — see adr/0002; Flask-free so
 │   │                            # execution/ can import it without an app context
 │   ├── utils/jinja_filters.py   # registers the |localtime template filter
-│   ├── static/               # CSS, JS (Alpine.js glue, wake-word.js, voice.js)
+│   ├── utils/plan_graph.py  # pure: plan progress math + Mermaid source for the plan graph
+│   ├── utils/plan_context.py    # per-request active-plan scope: plan-scoped project progress
+│   │                            # (project_progress context helper) and the Tasks plan filter
+│   ├── static/               # CSS, JS (Alpine.js glue, wake-word.js, voice.js, plan_graph.js —
+│   │                         # the Tasks graph view; lazy-loads pinned Mermaid 11.4.1)
 │   └── templates/            # HTMX partials + the persistent HUD base.html
 ├── instance/app.db          # the live SQLite DB (WAL mode; tracked in git in this project)
 └── migrations/versions/     # Alembic migrations
@@ -24,8 +28,11 @@ execution/
 ├── agent_actions.py         # the CLI + function surface every agent (human, Claude Code, the
 │                             # LLM Orchestrator) calls for data operations — see governance/
 ├── db_client.py             # shared DB session factory (WAL-enabled)
-├── github_sync.py           # read-only GitHub GraphQL polling — see architecture/ + business_logic.md
-├── github_sync_worker.py    # long-running two-cadence loop entrypoint for the github-sync container
+├── github_sync.py           # read-only GitHub GraphQL polling — see architecture/ + business_logic.md;
+│                             # graphql_query() is the single, mutation-refusing exit point to GitHub
+├── github_sync_worker.py    # long-running three-cadence loop entrypoint for the github-sync container
+├── plan_sync.py             # active plans' live PR/CI/review state -> PlanItem (third cadence)
+├── plan_import.py           # pure validation of a plan spec JSON (schema, DAG, same-org repos)
 ├── repetition_processor.py  # daily/weekly/monthly Task status resets (local-day boundary)
 └── backfill_github_created_at.py  # one-off: populate Task.github_created_at from GitHub
 

@@ -9,7 +9,8 @@ if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
 from execution.db_client import get_session
-from dashboard_app.app.models import Employee, System, Project, Task, StatusEnum, ReviewStateEnum, Notification
+from dashboard_app.app.models import Employee, System, Project, Task, StatusEnum, ReviewStateEnum, Notification, Plan, PlanItem, PlanEdge
+import json
 import requests
 import threading
 
@@ -489,6 +490,201 @@ def list_employees():
         session.close()
 
 
+# --- Plan Operations ---
+
+def _plan_project_map(session, repos):
+    """{repo_lower: Project} for the repos a plan names; repos with no linked Project are absent."""
+    wanted = {r.lower() for r in repos}
+    projects = session.query(Project).filter(Project.github_repo.isnot(None)).all()
+    return {p.github_repo.lower(): p for p in projects if p.github_repo.lower() in wanted}
+
+
+def link_plan_item_tasks(session, items):
+    """Point each issue PlanItem at the Task mirroring the same repo#issue, when one exists.
+    Returns how many links changed. Does not commit."""
+    projects = _plan_project_map(session, {i.repo for i in items if i.repo})
+    changed = 0
+    for item in items:
+        if item.node_kind != "issue":
+            continue
+        project = projects.get(item.repo.lower())
+        task = None
+        if project:
+            task = (session.query(Task)
+                    .filter(Task.project_id == project.id, Task.github_issue_number == item.issue_number)
+                    .first())
+        task_id = task.id if task else None
+        if item.task_id != task_id:
+            item.task_id = task_id
+            changed += 1
+    return changed
+
+
+def import_plan(path, activate=True, create_missing_projects=False):
+    """Import a validated plan spec (JSON file, see execution/plan_import.py) for one System.
+
+    Every repo the plan names must already be a Project with that github_repo, unless
+    create_missing_projects is set -- github_sync never creates Projects, and neither does an
+    import implicitly. One bulk write and a single UI refresh, not one per item."""
+    from execution.plan_import import PlanSpecError, validate_plan_spec
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as e:
+        return f"Error importing plan: cannot read {path}: {e}"
+    try:
+        spec = validate_plan_spec(raw)
+    except PlanSpecError as e:
+        return f"Error importing plan: {e}"
+
+    repos = sorted({n["repo"] for n in spec["nodes"]}, key=str.lower)
+    session = get_session()
+    try:
+        projects = _plan_project_map(session, repos)
+        missing = [r for r in repos if r.lower() not in projects]
+        if missing and not create_missing_projects:
+            return ("Error importing plan: no Project is linked to "
+                    + ", ".join(missing)
+                    + ". Link them with `project --create NAME --github-repo OWNER/REPO`, "
+                      "or re-run with --create-missing-projects.")
+        # All repos share the plan's org (validated), so they share one System. Resolved before
+        # any other write: _resolve_system_id commits on its own when it creates the System.
+        system_id = _resolve_system_id(session, repos[0])
+        for repo in missing:
+            session.add(Project(name=repo.split("/", 1)[1], status=StatusEnum.TODO, github_repo=repo,
+                                system_id=system_id))
+        session.flush()
+
+        plan = Plan(name=spec["name"], system_id=system_id, target_date=spec["target_date"],
+                    is_active=False, source_name=spec["source"] or os.path.basename(path),
+                    spec_json=json.dumps(raw, ensure_ascii=False))
+        session.add(plan)
+        session.flush()
+
+        groups = {g["key"]: g for g in spec["groups"]}
+        items = []
+        for position, node in enumerate(spec["nodes"]):
+            item = PlanItem(plan_id=plan.id, position=position, key=node["key"],
+                            display_key=node["display_key"], label=node["label"],
+                            group_key=node["group"], group_label=groups[node["group"]]["label"],
+                            repo=node["repo"], issue_number=node["issue"], node_kind=node["kind"])
+            session.add(item)
+            items.append(item)
+        for position, edge in enumerate(spec["edges"]):
+            session.add(PlanEdge(plan_id=plan.id, position=position, from_key=edge["from"],
+                                 to_key=edge["to"], kind=edge["kind"], label=edge["label"]))
+        link_plan_item_tasks(session, items)
+
+        if activate:
+            session.query(Plan).filter(Plan.system_id == system_id, Plan.id != plan.id).update({"is_active": False})
+            plan.is_active = True
+        session.commit()
+
+        issue_count = sum(1 for i in items if i.node_kind == "issue")
+        linked = sum(1 for i in items if i.task_id)
+        msg = (f"Plan '{plan.name}' imported with ID: {plan.id} ({issue_count} issues, "
+               f"{len(spec['edges'])} edges, {linked} linked to existing Tasks"
+               + (f", {len(missing)} Projects created" if missing else "")
+               + (", active)" if activate else ", inactive)"))
+        print(msg)
+        trigger_ui_refresh("import_plan", toast={"message": f"Plan '{plan.name}' imported", "type": "success"})
+        return msg
+    except Exception as e:
+        session.rollback()
+        return f"Error importing plan: {e}"
+    finally:
+        session.close()
+
+
+def activate_plan(plan_id):
+    """Make this the System's active plan (deactivating its other plans)."""
+    session = get_session()
+    try:
+        plan = session.query(Plan).get(plan_id)
+        if not plan:
+            return f"Plan ID {plan_id} not found."
+        if plan.is_active:
+            return f"Plan '{plan.name}' (ID: {plan_id}) is already active."
+        session.query(Plan).filter(Plan.system_id == plan.system_id, Plan.id != plan.id).update({"is_active": False})
+        plan.is_active = True
+        session.commit()
+        msg = f"Plan '{plan.name}' (ID: {plan_id}) is now active."
+        print(msg)
+        trigger_ui_refresh("activate_plan", toast={"message": f"Plan '{plan.name}' is now active", "type": "success"})
+        return msg
+    except Exception as e:
+        session.rollback()
+        return f"Error activating plan: {e}"
+    finally:
+        session.close()
+
+
+def deactivate_plan(plan_id):
+    """Stop scoping progress to this plan; the dashboard falls back to all Tasks."""
+    session = get_session()
+    try:
+        plan = session.query(Plan).get(plan_id)
+        if not plan:
+            return f"Plan ID {plan_id} not found."
+        if not plan.is_active:
+            return f"Plan '{plan.name}' (ID: {plan_id}) is already inactive."
+        plan.is_active = False
+        session.commit()
+        msg = f"Plan '{plan.name}' (ID: {plan_id}) deactivated."
+        print(msg)
+        trigger_ui_refresh("deactivate_plan", toast={"message": f"Plan '{plan.name}' deactivated", "type": "success"})
+        return msg
+    except Exception as e:
+        session.rollback()
+        return f"Error deactivating plan: {e}"
+    finally:
+        session.close()
+
+
+def delete_plan(plan_id):
+    session = get_session()
+    try:
+        plan = session.query(Plan).get(plan_id)
+        if not plan:
+            return f"Plan ID {plan_id} not found."
+        name = plan.name
+        session.delete(plan)
+        session.commit()
+        msg = f"Plan '{name}' (ID: {plan_id}) has been deleted."
+        print(msg)
+        trigger_ui_refresh("delete_plan", toast={"message": f"Plan '{name}' deleted", "type": "success"})
+        return msg
+    except Exception as e:
+        session.rollback()
+        return f"Error deleting plan: {e}"
+    finally:
+        session.close()
+
+
+def list_plans(system_id=None):
+    session = get_session()
+    try:
+        query = session.query(Plan)
+        if system_id:
+            query = query.filter(Plan.system_id == system_id)
+        plans = query.order_by(Plan.id.desc()).all()
+        if not plans:
+            return "No plans found."
+        results = []
+        for p in plans:
+            issues = [i for i in p.items if i.node_kind == "issue"]
+            target = p.target_date.isoformat() if p.target_date else "-"
+            results.append(f"ID: {p.id} | Name: {p.name} | System ID: {p.system_id} | "
+                           f"Active: {'yes' if p.is_active else 'no'} | Issues: {len(issues)} | Target: {target}")
+        msg = "Plans:\n" + "\n".join(results)
+        print(msg)
+        return msg
+    except Exception as e:
+        return f"Error listing plans: {e}"
+    finally:
+        session.close()
+
 # --- Global / Utility Operations ---
 
 def navigate_to(destination):
@@ -602,6 +798,17 @@ if __name__ == "__main__":
     employee_parser.add_argument("--list", action="store_true", help="List all employees")
     employee_parser.add_argument("--name", help="New name for the employee")
 
+    # Plan commands
+    plan_parser = subparsers.add_parser("plan", help="Implementation plan operations")
+    plan_parser.add_argument("--import", dest="import_path", help="Import a plan spec JSON file (see docs/skills/import-plan/SKILL.md)")
+    plan_parser.add_argument("--inactive", action="store_true", help="With --import: do not activate the imported plan")
+    plan_parser.add_argument("--create-missing-projects", action="store_true", help="With --import: create a Project for each plan repo that has none")
+    plan_parser.add_argument("--activate", type=int, help="Plan ID to make the active plan of its System")
+    plan_parser.add_argument("--deactivate", type=int, help="Plan ID to deactivate")
+    plan_parser.add_argument("--delete", type=int, help="Plan ID to delete")
+    plan_parser.add_argument("--list", action="store_true", help="List all plans")
+    plan_parser.add_argument("--system-id", type=int, help="With --list: only this System's plans")
+
     # Search command
     search_parser = subparsers.add_parser("search", help="Search operations")
     search_parser.add_argument("--entity-type", required=True, choices=["employee", "system", "project", "task"], help="Type of entity to search for")
@@ -655,6 +862,20 @@ if __name__ == "__main__":
         elif args.list:
             print(list_employees())
 
+
+    elif args.command == "plan":
+        if args.import_path:
+            print(import_plan(args.import_path, activate=not args.inactive, create_missing_projects=args.create_missing_projects))
+        elif args.activate:
+            print(activate_plan(args.activate))
+        elif args.deactivate:
+            print(deactivate_plan(args.deactivate))
+        elif args.delete:
+            print(delete_plan(args.delete))
+        elif args.list:
+            print(list_plans(args.system_id))
+        else:
+            print("Error: Invalid plan arguments.")
 
     elif args.command == "search":
         print(search_entities(args.entity_type, args.query))

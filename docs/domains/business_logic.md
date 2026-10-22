@@ -53,6 +53,43 @@ erDiagram
         datetime created_at
     }
     EMPLOYEE ||--o{ NOTIFICATION : linked_to
+
+    SYSTEM ||--o{ PLAN : has
+    PLAN ||--o{ PLAN_ITEM : contains
+    PLAN ||--o{ PLAN_EDGE : contains
+    TASK |o--o{ PLAN_ITEM : mirrored_by
+
+    PLAN {
+        int id
+        string name
+        int system_id
+        date target_date
+        bool is_active
+        text spec_json
+    }
+
+    PLAN_ITEM {
+        int id
+        int plan_id
+        string key
+        string group_key
+        string repo
+        int issue_number
+        string node_kind
+        int task_id
+        enum plan_status
+        int pr_number
+        string pr_ci_state
+        string pr_review_decision
+    }
+
+    PLAN_EDGE {
+        int id
+        int plan_id
+        string from_key
+        string to_key
+        string kind
+    }
 ```
 
 ## Entities
@@ -78,9 +115,58 @@ erDiagram
   `domains/flows.md`'s toast-mechanism section. No retention/cleanup policy (same accepted gap as
   `ChatMessage`); the Dashboard query caps display at the 200 most recent rows.
 
+- **Plan**: one short-cycle implementation plan (e.g. a week's work) for one System — the subset
+  of that org's GitHub issues that progress should count *right now*, plus their dependency DAG.
+  At most one Plan per System is active (`is_active`), enforced by `import_plan`/`activate_plan`
+  in `execution/agent_actions.py`, not by a DB constraint. `spec_json` keeps the imported spec
+  verbatim. Created only by `agent_actions plan --import` (see
+  `skills/import-plan/SKILL.md`); deleting a Plan cascades to its items and edges and never
+  touches Tasks.
+- **PlanItem**: one node of the plan graph. `node_kind` is `issue` (mirrors `repo#issue_number`)
+  or `base` (a branch context node with no issue). Unique per plan on `key` and on
+  `(repo, issue_number)`. `task_id` points at the Task mirroring the same issue when one exists
+  (relinked by every plan sync cycle; `SET NULL` if the Task is deleted). The live columns —
+  `github_title`, `issue_state`, `issue_state_reason`, `pr_number`, `pr_state`, `pr_is_draft`,
+  `pr_ci_state`, `pr_review_decision`, `plan_status`, `status_changed_at`, `last_synced_at` — are
+  written only by `execution/plan_sync.py`. `plan_status` is `NULL` until the first sync.
+- **PlanEdge**: a dependency between two items of the same plan. `kind`: `base` (starts from the
+  base branch), `stacked` (the PR targets the parent's branch), `after_merge` (starts from main
+  once the parent is merged), `cross` (a cross-repo condition, e.g. "contract", "staging";
+  `label` holds it). `base`/`stacked`/`after_merge` never cross repositories — validated at
+  import, together with acyclicity.
+
+## Plan status rule (`execution/plan_sync.py`)
+
+`PlanStatusEnum` follows the status-color rule of the plan documents it is imported from; its
+values double as CSS class suffixes. The module docstring is authoritative; summarized:
+
+| Value | Meaning |
+|---|---|
+| `cerrada` | issue closed as completed |
+| `descartada` | issue closed as not planned or duplicate — leaves the progress denominator |
+| `prbloq` | selected PR open with CI rollup `FAILURE`/`ERROR`, or `reviewDecision = CHANGES_REQUESTED` |
+| `conpr` | selected PR open (drafts included; `pr_is_draft` marks them) |
+| `fusionada` | selected PR merged, issue still open (staging/device check pending) |
+| `sinpr` | anything else, including an issue whose only PRs were closed without merging |
+
+- **Selected PR**: among PRs of the *same repo* linked by closing keyword / dev panel
+  (`closedByPullRequestsReferences`, closed ones included) or by a cross-reference (covers
+  `Refs #N`), the open one wins, else the merged one; the highest number breaks ties.
+- A PR whose CI rollup is unreadable (`null` — no checks, or a token without commit-status read)
+  is never `prbloq` on CI grounds.
+- **This is deliberately not the Task status rule.** A Task with a merged PR reads `Done`
+  (`_compute_status` above), while its plan node reads `fusionada` — see
+  `memory/knowledge_base.md`.
+
 ## Computed properties (not columns — `models.py`)
 
-- `Project.progress` — `%` of the Project's Tasks with `status == Done`, 0 if it has none.
+- `Project.progress` — `%` of the Project's Tasks with `status == Done`, 0 if it has none. **Not
+  what the projects tables show for a Project in an active plan**: there,
+  `utils/plan_context.py::project_progress` shows `(fusionada + cerrada) / (plan issues of that
+  repo − descartada)` — merged counts as done per the PM decision of 2026-10-22 — plus an
+  "N/M in plan" mark, and drives the completed-row strikethrough the same way. A never-synced
+  plan item counts as not done. Projects outside every active plan keep `progress`/`is_complete`.
+- `PlanItem.issue_url` / `PlanItem.pr_url` — GitHub links built from `repo` and the numbers.
 - `Project.is_complete` — `True` iff the Project has at least one Task and every Task is `Done`;
   drives the completed-row strikethrough styling in the Projects and System-detail tables.
 - `Task.github_url` — the task-name link target: the linked PR's URL if `github_pr_number` is set,

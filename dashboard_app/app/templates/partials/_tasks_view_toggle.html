@@ -1,0 +1,14 @@
+{# List / Graph switch for the Tasks view. Plain boosted links (no hx-target here or on an
+   ancestor -- see the inheritance gotcha in docs/domains/flows.md). #}
+<nav class="view-toggle" aria-label="Tasks view">
+    <a href="{{ url_for('main.tasks_list') }}"
+       class="view-toggle-option {% if view != 'graph' %}is-current{% endif %}"
+       {% if view != 'graph' %}aria-current="page"{% endif %}>
+        <i class="bi bi-list-ul" aria-hidden="true"></i> List
+    </a>
+    <a href="{{ url_for('main.tasks_list', view='graph') }}"
+       class="view-toggle-option {% if view == 'graph' %}is-current{% endif %}"
+       {% if view == 'graph' %}aria-current="page"{% endif %}>
+        <i class="bi bi-diagram-3" aria-hidden="true"></i> Graph
+    </a>
+</nav>
