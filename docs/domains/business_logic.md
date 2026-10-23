@@ -112,8 +112,11 @@ erDiagram
   `error`/`info`). `employee_id` is nullable and only ever set for Task-related events (the Task's
   assignee at the time) — System/Project/Employee-entity notifications carry no employee, since
   those entities have no assignee concept. Populated from *both* toast-dispatch mechanisms — see
-  `domains/flows.md`'s toast-mechanism section. No retention/cleanup policy (same accepted gap as
-  `ChatMessage`); the Dashboard query caps display at the 200 most recent rows.
+  `domains/flows.md`'s toast-mechanism section. **Retention**: the table keeps only the newest
+  `NOTIFICATION_HISTORY_LIMIT` (500) rows by `id` (insertion order) — every insert calls
+  `prune_notifications()` (`models.py`) in the same transaction, deleting everything older. The
+  Dashboard query still caps display at the 200 most recent rows. (`ChatMessage` still has no
+  retention policy.)
 
 - **Plan**: one short-cycle implementation plan (e.g. a week's work) for one System — the subset
   of that org's GitHub issues that progress should count *right now*, plus their dependency DAG.

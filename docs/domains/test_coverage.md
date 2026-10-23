@@ -1,6 +1,6 @@
 # Test Coverage
 
-Ten test files under `tests/`, all `unittest`-based, plus one manual diagnostic script that lives
+Twelve test files under `tests/`, all `unittest`-based, plus one manual diagnostic script that lives
 outside `tests/` entirely. None of `tests/` is wired into the Docker image (`tests/` isn't copied
 at build time) — run them by `docker cp`-ing the folder in first, or on a host Python environment
 with the project's dependencies installed.
@@ -43,6 +43,11 @@ with the project's dependencies installed.
   through Flask's test client: plan-scoped `/projects` progress, the Tasks plan filter on
   `/tasks` and `/api/updates/tasks`, `/api/plans/graph` JSON, the graph page and the 401 gate.
   This is also the first committed route-level coverage of the Tasks filters.
+- **`tests/test_notification_retention.py`** (5 tests) — Notification History retention on its
+  own temp DB (`test_notification_app.db`): `prune_notifications` at the 0/499/500/501 boundaries,
+  keeping the newest ids, and the 500 cap holding after an insert from each writer —
+  `record_notification` and both `trigger_ui_refresh` copies (`agent_actions`, `log_progress`; the
+  notify thread is patched out). Run in its own process.
 - **`tests/test_repetitions.py`** (7 tests) — `execution/repetition_processor.py`'s daily/weekly
   (Monday-only)/monthly (1st-only) reset logic, using a real temp SQLite DB
   (`dashboard_app/instance/test_app.db`) and a mocked `today` date. Two of the seven are the

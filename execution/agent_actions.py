@@ -9,7 +9,7 @@ if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
 from execution.db_client import get_session
-from dashboard_app.app.models import Employee, System, Project, Task, StatusEnum, ReviewStateEnum, Notification, Plan, PlanItem, PlanEdge
+from dashboard_app.app.models import Employee, System, Project, Task, StatusEnum, ReviewStateEnum, Notification, prune_notifications, Plan, PlanItem, PlanEdge
 import json
 import requests
 import threading
@@ -33,6 +33,8 @@ def trigger_ui_refresh(message="update", toast=None, employee_id=None, task_id=N
             s = get_session()
             s.add(Notification(message=toast["message"], type=toast.get("type", "info"),
                                 employee_id=employee_id, task_id=task_id, project_id=project_id))
+            s.flush()
+            prune_notifications(s)
             s.commit()
             s.close()
         except Exception as e:

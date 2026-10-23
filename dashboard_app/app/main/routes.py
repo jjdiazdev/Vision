@@ -1,7 +1,7 @@
 from flask import render_template, request, redirect, url_for, Response, stream_with_context, make_response, session, current_app, abort
 from werkzeug.security import check_password_hash
 from dashboard_app.app.main import bp
-from dashboard_app.app.models import Task, Project, StatusEnum, Employee, System, ChatMessage, Notification, Plan
+from dashboard_app.app.models import Task, Project, StatusEnum, Employee, System, ChatMessage, Notification, Plan, prune_notifications
 from dashboard_app.app.extensions import db
 from dashboard_app.app.utils.trigger import trigger_task_update, trigger_project_update
 from dashboard_app.app.utils.sse import announcer
@@ -15,9 +15,14 @@ import json
 def record_notification(message, type='info', employee_id=None, task_id=None, project_id=None):
     """Persists a Notification row (dashboard history panel) for a toast shown via the
     HX-Trigger mechanism (as opposed to trigger_ui_refresh's SSE mechanism, which persists
-    its own toasts internally — see execution/agent_actions.py). Does not commit; rides
-    the caller's existing db.session.commit()."""
+    its own toasts internally — see execution/agent_actions.py). Also prunes the history down
+    to the newest NOTIFICATION_HISTORY_LIMIT rows. Does not commit; rides the caller's
+    existing db.session.commit()."""
     db.session.add(Notification(message=message, type=type, employee_id=employee_id, task_id=task_id, project_id=project_id))
+    try:
+        prune_notifications(db.session)
+    except Exception as e:  # never let history housekeeping break the user's own change
+        print(f"Error pruning notifications: {e}")
 
 # Endpoints reachable without an authenticated session: the login form itself, and the
 # internal server-to-server notify hook (trigger_ui_refresh() in agent_actions.py/github_sync.py

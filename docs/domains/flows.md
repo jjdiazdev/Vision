@@ -88,6 +88,13 @@ Dashboard-only "Notification History" panel (`partials/_notifications_panel.html
   `routes.py`, called directly from `update_task_status()`, `update_project_status()`, and
   `agent_chat()`'s error branch — these never call `trigger_ui_refresh`, so they persist independently,
   riding whichever `db.session.commit()` already exists nearby rather than adding a new one.
+- **Retention (both mechanisms)**: right after adding the row, Mechanism A (`s.flush()` then
+  `prune_notifications(s)`, before its own commit) and Mechanism B (`prune_notifications(db.session)`,
+  riding the caller's commit) delete every Notification older than the newest 500, by `id`. The
+  prune is inside the same try/except (A) or its own one (B), so a failure never breaks the SSE
+  notify or the user's change. `web` and `github-sync` can prune concurrently; it's idempotent and
+  SQLite WAL serializes the writes. The Clear-all `hx-confirm` count shows only the rendered ≤200
+  rows while the route deletes all of them (≤500) — a known, pre-existing wording gap.
 - A consequence of centralizing Mechanism A inside `trigger_ui_refresh`: the still-open
   `repetition_processor.py` no-toast gap (row 10 of the inventory above) will start producing
   Notifications automatically, with zero Notification-specific code, whenever that gap is eventually

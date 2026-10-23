@@ -216,3 +216,21 @@ class Notification(db.Model, TimestampMixin):
     # Unlike task_id/project_id above, the Task's title is looked up live (not snapshotted) when
     # building the "jump to this task" link, so a since-renamed Task still gets found by search.
     task = db.relationship('Task')
+
+# The Notification History keeps only the newest rows; every insert prunes the rest.
+NOTIFICATION_HISTORY_LIMIT = 500
+
+def prune_notifications(session, keep=NOTIFICATION_HISTORY_LIMIT):
+    """Deletes every Notification older than the `keep` newest, ordered by id (insertion order).
+
+    Works with any SQLAlchemy session (Flask's db.session or execution's get_session()) and
+    does not commit, so it rides the same transaction as the insert that triggered it.
+    Returns the number of rows deleted."""
+    cutoff = (session.query(Notification.id)
+              .order_by(Notification.id.desc())
+              .offset(keep - 1).limit(1).scalar())
+    if cutoff is None:
+        return 0
+    return (session.query(Notification)
+            .filter(Notification.id < cutoff)
+            .delete(synchronize_session=False))
